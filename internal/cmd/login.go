@@ -582,6 +582,9 @@ func showProjectSelectionHelp(email string, projects []interfaces.GCPProjectProj
 }
 
 func checkCloudAPIIsEnabled(ctx context.Context, httpClient *http.Client, projectID string) (bool, error) {
+	if os.Getenv("DISABLE_CHECK_CLOUD_API") != "" {
+		return true, nil
+	}
 	serviceUsageURL := "https://serviceusage.googleapis.com"
 	requiredServices := []string{
 		// "geminicloudassist.googleapis.com", // Gemini Cloud Assist API

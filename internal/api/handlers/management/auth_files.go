@@ -2499,6 +2499,9 @@ func fetchGCPProjects(ctx context.Context, httpClient *http.Client) ([]interface
 }
 
 func checkCloudAPIIsEnabled(ctx context.Context, httpClient *http.Client, projectID string) (bool, error) {
+	if os.Getenv("DISABLE_CHECK_CLOUD_API") != "" {
+		return true, nil
+	}
 	serviceUsageURL := "https://serviceusage.googleapis.com"
 	requiredServices := []string{
 		"cloudaicompanion.googleapis.com",
