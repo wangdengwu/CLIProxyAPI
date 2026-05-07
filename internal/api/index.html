@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gemini Proxy Server</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 2rem; color: #333; }
+        h1, h2 { color: #2c3e50; }
+        .config-block { background: #f8f9fa; padding: 1rem; border-radius: 4px; overflow-x: auto; font-family: monospace; }
+        .config-line { display: flex; }
+        .config-key { width: 190px; flex-shrink: 0; }
+        .config-value { flex-grow: 1; }
+        code { background: #f8f9fa; padding: 0.2rem 0.4rem; border-radius: 3px; font-family: monospace; }
+        .token { color: #e74c3c; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>Gemini Proxy Server</h1>
+
+    <h2>Claude Code Configuration</h2>
+    <p>To use gemini with Claude Code, use the following config in your claude code:</p>
+
+    <div class="config-block">
+        <div class="config-line">
+            <span class="config-key">ANTHROPIC_BASE_URL</span>
+            <span class="config-value">= %s</span>
+        </div>
+        <div class="config-line">
+            <span class="config-key">ANTHROPIC_AUTH_TOKEN</span>
+            <span class="config-value">= <span class="token">%s</span></span>
+        </div>
+    </div>
+
+    <h2>Supported Models</h2>
+    <ul>
+        <li><code>gemini-3.1-pro-preview</code></li>
+        <li><code>gemini-3-flash-preview</code></li>
+    </ul>
+</body>
+</html>

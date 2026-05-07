@@ -19,6 +19,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	_ "embed"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/access"
@@ -43,6 +44,9 @@ import (
 	"golang.org/x/net/http2"
 	"gopkg.in/yaml.v3"
 )
+
+//go:embed index.html
+var indexHTMLTemplate string
 
 const oauthCallbackSuccessHTML = `<html><head><meta charset="utf-8"><title>Authentication successful</title><script>setTimeout(function(){window.close();},5000);</script></head><body><h1>Authentication successful!</h1><p>You can close this window.</p><p>This window will close automatically in 5 seconds.</p></body></html>`
 
@@ -383,14 +387,22 @@ func (s *Server) setupRoutes() {
 
 	// Root endpoint
 	s.engine.GET("/", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"message": "CLI Proxy API Server",
-			"endpoints": []string{
-				"POST /v1/chat/completions",
-				"POST /v1/completions",
-				"GET /v1/models",
-			},
-		})
+		host := c.Request.Host
+		scheme := "http"
+		if c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https" {
+			scheme = "https"
+		}
+		baseURL := fmt.Sprintf("%s://%s", scheme, host)
+
+		authToken := "<your_api_key_from_config.yaml>"
+		if s.cfg != nil && len(s.cfg.APIKeys) > 0 {
+			authToken = s.cfg.APIKeys[0]
+		}
+
+		htmlContent := fmt.Sprintf(indexHTMLTemplate, baseURL, authToken)
+
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusOK, htmlContent)
 	})
 	s.engine.POST("/v1internal:method", geminiCLIHandlers.CLIHandler)
 
