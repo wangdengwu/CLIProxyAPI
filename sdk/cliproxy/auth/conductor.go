@@ -200,6 +200,10 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 	manager.runtimeConfig.Store(&internalconfig.Config{})
 	manager.apiKeyModelAlias.Store(apiKeyModelAliasTable(nil))
 	manager.scheduler = newAuthScheduler(selector)
+	// Register as the active target for out-of-band rate-limit blocks (see
+	// ApplyRatelimitBlock). In the normal single-Manager deployment this is the
+	// running Manager; tests exercise (*Manager).applyRatelimitBlock directly.
+	activeRatelimitTarget.Store(manager)
 	return manager
 }
 
