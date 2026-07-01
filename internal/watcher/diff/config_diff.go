@@ -90,6 +90,23 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 		changes = append(changes, fmt.Sprintf("quota-exceeded.antigravity-credits: %t -> %t", oldCfg.QuotaExceeded.AntigravityCredits, newCfg.QuotaExceeded.AntigravityCredits))
 	}
 
+	// Claude rate-limit alert behavior
+	if oldCfg.ClaudeRatelimitAlert.Enabled != newCfg.ClaudeRatelimitAlert.Enabled {
+		changes = append(changes, fmt.Sprintf("claude-ratelimit-alert.enabled: %t -> %t", oldCfg.ClaudeRatelimitAlert.Enabled, newCfg.ClaudeRatelimitAlert.Enabled))
+	}
+	if oldCfg.ClaudeRatelimitAlert.WebhookURL != newCfg.ClaudeRatelimitAlert.WebhookURL {
+		changes = append(changes, "claude-ratelimit-alert.webhook-url: (changed)")
+	}
+	if oldCfg.ClaudeRatelimitAlert.AlertThreshold != newCfg.ClaudeRatelimitAlert.AlertThreshold {
+		changes = append(changes, fmt.Sprintf("claude-ratelimit-alert.alert-threshold: %g -> %g", oldCfg.ClaudeRatelimitAlert.AlertThreshold, newCfg.ClaudeRatelimitAlert.AlertThreshold))
+	}
+	if oldCfg.ClaudeRatelimitAlert.BlockThreshold != newCfg.ClaudeRatelimitAlert.BlockThreshold {
+		changes = append(changes, fmt.Sprintf("claude-ratelimit-alert.block-threshold: %g -> %g", oldCfg.ClaudeRatelimitAlert.BlockThreshold, newCfg.ClaudeRatelimitAlert.BlockThreshold))
+	}
+	if oldCfg.ClaudeRatelimitAlert.Cooldown != newCfg.ClaudeRatelimitAlert.Cooldown {
+		changes = append(changes, fmt.Sprintf("claude-ratelimit-alert.cooldown: %s -> %s", oldCfg.ClaudeRatelimitAlert.Cooldown, newCfg.ClaudeRatelimitAlert.Cooldown))
+	}
+
 	if oldCfg.Routing.Strategy != newCfg.Routing.Strategy {
 		changes = append(changes, fmt.Sprintf("routing.strategy: %s -> %s", oldCfg.Routing.Strategy, newCfg.Routing.Strategy))
 	}

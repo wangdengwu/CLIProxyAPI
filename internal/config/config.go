@@ -88,6 +88,10 @@ type Config struct {
 	// QuotaExceeded defines the behavior when a quota is exceeded.
 	QuotaExceeded QuotaExceeded `yaml:"quota-exceeded" json:"quota-exceeded"`
 
+	// ClaudeRatelimitAlert configures alerting/blocking on Claude unified rate-limit
+	// utilization parsed from upstream Anthropic response headers.
+	ClaudeRatelimitAlert ClaudeRatelimitAlert `yaml:"claude-ratelimit-alert" json:"claude-ratelimit-alert"`
+
 	// Routing controls credential selection behavior.
 	Routing RoutingConfig `yaml:"routing" json:"routing"`
 
@@ -215,6 +219,28 @@ type QuotaExceeded struct {
 	// When all free-tier auths are exhausted (429/503), the conductor retries with
 	// an auth that has available Google One AI credits.
 	AntigravityCredits bool `yaml:"antigravity-credits" json:"antigravity-credits"`
+}
+
+// ClaudeRatelimitAlert configures the Claude unified rate-limit alert/block feature.
+// Utilization is parsed from Anthropic's unified rate-limit response headers; when a
+// rolling window's used ratio crosses AlertThreshold an alert may be pushed to
+// WebhookURL, and when it crosses BlockThreshold the credential may be temporarily
+// blocked. Cooldown debounces repeated alerts for the same window.
+type ClaudeRatelimitAlert struct {
+	// Enabled toggles the whole feature. When false, no parsing/logging/alerting occurs.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// WebhookURL is the alert destination (e.g. a WeCom bot webhook). Empty disables alerting.
+	WebhookURL string `yaml:"webhook-url" json:"webhook-url"`
+
+	// AlertThreshold is the used-ratio (0..1+) at or above which an alert is raised.
+	AlertThreshold float64 `yaml:"alert-threshold" json:"alert-threshold"`
+
+	// BlockThreshold is the used-ratio (0..1+) at or above which the credential is blocked.
+	BlockThreshold float64 `yaml:"block-threshold" json:"block-threshold"`
+
+	// Cooldown is a duration string (e.g. "5m") that debounces repeated alerts per window.
+	Cooldown string `yaml:"cooldown" json:"cooldown"`
 }
 
 // RoutingConfig configures how credentials are selected for requests.
@@ -621,6 +647,10 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.AmpCode.RestrictManagementToLocalhost = false // Default to false: API key auth is sufficient
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
+	cfg.ClaudeRatelimitAlert.Enabled = true
+	cfg.ClaudeRatelimitAlert.AlertThreshold = 0.80
+	cfg.ClaudeRatelimitAlert.BlockThreshold = 0.85
+	cfg.ClaudeRatelimitAlert.Cooldown = "5m"
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.

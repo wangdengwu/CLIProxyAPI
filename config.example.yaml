@@ -109,6 +109,17 @@ quota-exceeded:
   switch-preview-model: true # Whether to automatically switch to a preview model when a quota is exceeded
   antigravity-credits: true # Whether to use credits as last-resort fallback when all free-tier auths are exhausted for Claude models
 
+# Claude unified rate-limit alerting/blocking.
+# Utilization is parsed from Anthropic's unified rate-limit response headers on Claude
+# OAuth (subscription) requests. When a rolling window's used ratio crosses the
+# thresholds, an alert can be pushed and the credential temporarily blocked.
+claude-ratelimit-alert:
+  enabled: true # Master switch; when false nothing is parsed/logged/alerted (default: true)
+  webhook-url: "" # Alert destination (e.g. WeCom bot webhook). Empty disables alerting (default: "")
+  alert-threshold: 0.80 # Used-ratio at/above which an alert is raised (default: 0.80)
+  block-threshold: 0.85 # Used-ratio at/above which the credential is blocked (default: 0.85)
+  cooldown: "5m" # Debounce window for repeated alerts per rolling window (default: "5m")
+
 # Routing strategy for selecting credentials when multiple match.
 routing:
   strategy: "round-robin" # round-robin (default), fill-first
