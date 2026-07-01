@@ -233,7 +233,9 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	}
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
 	if e.cfg != nil && e.cfg.ClaudeRatelimitAlert.Enabled {
-		helps.LogClaudeRatelimitState(ctx, auth, helps.ParseClaudeRatelimit(httpResp.Header))
+		rlState := helps.ParseClaudeRatelimit(httpResp.Header)
+		helps.LogClaudeRatelimitState(ctx, auth, rlState)
+		helps.MaybeAlertClaudeRatelimit(ctx, e.cfg, auth, req.Model, rlState)
 	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		// Decompress error responses — pass the Content-Encoding value (may be empty)
@@ -410,7 +412,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	}
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
 	if e.cfg != nil && e.cfg.ClaudeRatelimitAlert.Enabled {
-		helps.LogClaudeRatelimitState(ctx, auth, helps.ParseClaudeRatelimit(httpResp.Header))
+		rlState := helps.ParseClaudeRatelimit(httpResp.Header)
+		helps.LogClaudeRatelimitState(ctx, auth, rlState)
+		helps.MaybeAlertClaudeRatelimit(ctx, e.cfg, auth, req.Model, rlState)
 	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		// Decompress error responses — pass the Content-Encoding value (may be empty)
