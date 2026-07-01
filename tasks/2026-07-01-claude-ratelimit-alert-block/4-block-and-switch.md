@@ -2,7 +2,7 @@
 id: 4
 slug: block-and-switch
 prd: docs/prds/2026-07-01-claude-ratelimit-alert-block.md
-state: ready-for-agent
+state: done
 category: enhancement
 blocked_by: [2]
 ---
@@ -27,14 +27,19 @@ blocked_by: [2]
 - 5h 无 limit/无法算比例时不阻断（无数据不误伤）。
 
 ## Acceptance criteria
-- [ ] 喂入 5h ≥ block_threshold 的解析结果 → 目标 auth 被置 `Unavailable`，`NextRetryAfter` 等于该窗口 5h reset 时间
-- [ ] 存在其他可用账号时，选择器跳过被阻断账号、切号成功
-- [ ] 所有账号都被阻断时，选择返回空/错误（客户端得到失败）
-- [ ] `NextRetryAfter`（reset）到期后，账号重新出现在可用集合中
-- [ ] 阻断为账号级，不因某一模型而只阻断该模型
-- [ ] 状态写入走注册表加锁路径，无数据竞争
-- [ ] `enabled=false` 时不发生阻断
-- [ ] 现有转发/选择行为在未触发阻断时保持不变
+- [x] 喂入 5h ≥ block_threshold 的解析结果 → 目标 auth 被置 `Unavailable`，`NextRetryAfter` 等于该窗口 5h reset 时间 — `TestApplyRatelimitBlock_SetsUnavailableAndReset` + `ShouldBlockClaudeRatelimit_*`
+- [x] 存在其他可用账号时，选择器跳过被阻断账号、切号成功 — `TestApplyRatelimitBlock_SelectorSkipsSwitchesAndRecovers`
+- [x] 所有账号都被阻断时，选择返回空/错误 — 同上（全阻断 → error）
+- [x] `NextRetryAfter`（reset）到期后，账号重新出现在可用集合中 — 同上（reset 后）+ `TestIsAuthBlockedForModel_AccountLevelBlocksAllModels`（自动恢复）
+- [x] 阻断为账号级，不因某一模型而只阻断该模型 — `TestIsAuthBlockedForModel_AccountLevelBlocksAllModels`（model 请求也被阻断）
+- [x] 状态写入走注册表加锁路径，无数据竞争 — `applyRatelimitBlock` 用 `m.mu`；`TestApplyRatelimitBlock_NoRace`（-race 通过）
+- [x] `enabled=false` 时不发生阻断 — 由 executor 处 `if e.cfg.ClaudeRatelimitAlert.Enabled` 门控，关闭时 `ShouldBlock`/`ApplyRatelimitBlock` 均不调用
+- [x] 现有转发/选择行为在未触发阻断时保持不变 — 纯新增旁路；`sdk/cliproxy/auth` 与 executor 全量测试通过、无回归
+
+## 实现说明
+- **接线（已与运营确认）**：executor 无 Manager 引用、conductor 因 helps→auth import 环无法解析响应头。故在 `sdk/cliproxy/auth` 加包级 `ApplyRatelimitBlock(authID, resetAt)` → 转发给已注册的活动 Manager 的 `applyRatelimitBlock`（锁 `m.mu` 改写 `m.auths[authID]` 的 `Unavailable`/`NextRetryAfter`，随后 `scheduler.upsertAuth` 刷新调度视图，不持久化）。executor 解析点用纯判定 `helps.ShouldBlockClaudeRatelimit` 决策后调用它。
+- **选择器修正（关键）**：`isAuthBlockedForModel` 原本对**带 model 的请求**不看账号级 `Unavailable`（selector.go 在 model 分支前直接 return），故账号级阻断对真实 Claude 请求（都带 model）无效——与 brief 假设不符。已在 `Disabled` 检查后加账号级前置检查：`auth.Unavailable && NextRetryAfter.After(now)` → blocked，对所有 model 生效并按时自动恢复。签名不变。
+- **固有滞后**：跨阈值那条请求本身放行，从下一条起才拦（响应头模型固有，非缺陷）。仅 5h 参与，7d 不阻断。
 
 ## Out of scope
 - 不做告警/推送（任务 3）。
