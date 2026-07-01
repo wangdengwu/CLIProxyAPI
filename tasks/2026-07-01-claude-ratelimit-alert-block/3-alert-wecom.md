@@ -2,7 +2,7 @@
 id: 3
 slug: alert-wecom
 prd: docs/prds/2026-07-01-claude-ratelimit-alert-block.md
-state: ready-for-agent
+state: done
 category: enhancement
 blocked_by: [2]
 ---
@@ -29,15 +29,21 @@ blocked_by: [2]
 - reset 时间格式见任务 1；文案里以人类可读时间展示。
 
 ## Acceptance criteria
-- [ ] 5h 首次跨过 alert 水位 → 推送恰好一次
-- [ ] 同一窗口内后续请求仍 ≥ 水位 → 不再推送
-- [ ] reset 时间戳变化（新窗口）后再次 ≥ 水位 → 重新推送
-- [ ] "被拒/打满"档与 alert 档在同一窗口内各自独立推一次
-- [ ] 硬冷却在异常高频调用下限制同一账号推送间隔
-- [ ] payload 为合法企业微信 markdown JSON，含全部约定字段，长度 ≤4096 字节
-- [ ] 有 7d 时文案含 7d 的剩余/上限/reset；无 7d 时文案正常且不含 7d 段
-- [ ] webhook 发送失败不影响请求转发（错误被吞并记日志）
-- [ ] `enabled=false` 或 `webhook_url` 空时不发送
+- [x] 5h 首次跨过 alert 水位 → 推送恰好一次 — `TestShouldAlert_FirstCrossFires` + `TestMaybeAlert_EnabledCrossingDispatchesOnce`
+- [x] 同一窗口内后续请求仍 ≥ 水位 → 不再推送 — `TestShouldAlert_SameWindowNoRepeat`
+- [x] reset 时间戳变化（新窗口）后再次 ≥ 水位 → 重新推送 — `TestShouldAlert_NewWindowRearms`
+- [x] "被拒/打满"档与 alert 档在同一窗口内各自独立推一次 — `TestShouldAlert_RejectedAndAlertTiersEachFireOnce`
+- [x] 硬冷却在异常高频调用下限制同一账号推送间隔 — `TestShouldAlert_HardCooldownSuppressesWithinInterval`
+- [x] payload 为合法企业微信 markdown JSON，含约定字段，长度 ≤4096 字节 — `TestBuildClaudeRatelimitMarkdown_Full` + `_ClampsTo4096`
+- [x] 有 7d 时文案含 7d 段；无 7d 时文案正常且不含 7d 段 — `_Full`（有 7d）+ `_FiveHourOnly`（无 7d）
+- [x] webhook 发送失败不影响请求转发（错误被吞并记日志）— 异步 goroutine + recover + 只记日志，永不回传主路径；`TestSendWeCom_Non2xxReturnsError` 证明错误被返回给吞错的 goroutine
+- [x] `enabled=false` 或 `webhook_url` 空时不发送 — `TestMaybeAlert_DisabledDoesNotDispatch` + `_EmptyWebhookDoesNotDispatch`
+
+## 实现说明
+- **契约修正（延续任务 1/2）**：任务原文文案要求含"剩余/上限"，但 Anthropic 统一限流头**不返回 limit/remaining**（见任务 1 CONFIRMED CONTRACT）。故文案改以**已用%（utilization）+ status + reset** 表达用量,不臆造 remaining/limit。
+- **落点**：`internal/runtime/executor/helps/ratelimit_alert.go`（`ShouldAlert` 去抖 + `BuildClaudeRatelimitMarkdown` + `SendWeCom`）+ `ratelimit_alert_wire.go`（`MaybeAlertClaudeRatelimit` 集成胶水,持进程级默认 alerter、解析 cooldown、异步 fire-and-forget)。接入 Claude executor `Execute`/`ExecuteStream` 的任务 2 解析点(与 `LogClaudeRatelimitState` 同处;`CountTokens` 不接)。
+- **去抖粒度**：`ShouldAlert` 注入 `now`(纯判定、无 IO、无内部 `time.Now()`),按 `auth_id` 维护 `{windowKey=reset.Unix(), 已告警档位集合, lastSent}`;新窗口重置档位、每档每窗一次、正交硬冷却(默认 5m,首次豁免)。`-race` 通过。
+- **发送**：异步 goroutine + `recover`,用**独立 background context**(不随请求 ctx 取消),失败仅记日志。
 
 ## Out of scope
 - 不做阻断/切号（任务 4）。
