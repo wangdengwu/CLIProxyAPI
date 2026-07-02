@@ -36,19 +36,31 @@ func MaybeAlertClaudeRatelimit(ctx context.Context, cfg *config.Config, auth *cl
 		return false
 	}
 
-	cooldown := parseClaudeRatelimitCooldown(cfg.ClaudeRatelimitAlert.Cooldown)
-	level, ok := defaultClaudeRatelimitAlerter.ShouldAlert(auth.ID, state, cfg.ClaudeRatelimitAlert.AlertThreshold, cooldown, time.Now())
-	if !ok {
-		return false
-	}
-
 	account := claudeRatelimitAccountLabel(auth)
-	msg := BuildClaudeRatelimitMarkdown(account, model, state)
 	reqID := logging.GetRequestID(ctx)
 	authID := auth.ID
 
-	// Fire-and-forget: detach from the request context (which is cancelled once the
-	// request completes) and never let a failure reach the caller.
+	// Block notice is evaluated INDEPENDENTLY of the alert decision below: it fires under
+	// the exact selector-block condition, deduped once per window, and bypasses the alert
+	// cooldown. This is deliberate — an alert sent moments earlier (same window, within
+	// cooldown) must not swallow the "account blocked" notice.
+	if blockUntil, ok := defaultClaudeRatelimitAlerter.ShouldNotifyBlock(authID, state, cfg.ClaudeRatelimitAlert.BlockThreshold); ok {
+		sendClaudeRatelimitWeComAsync(webhook, BuildClaudeRatelimitBlockMarkdown(account, model, state, blockUntil), reqID, authID, ClaudeRatelimitLevelBlocked)
+	}
+
+	cooldown := parseClaudeRatelimitCooldown(cfg.ClaudeRatelimitAlert.Cooldown)
+	level, ok := defaultClaudeRatelimitAlerter.ShouldAlert(authID, state, cfg.ClaudeRatelimitAlert.AlertThreshold, cooldown, time.Now())
+	if !ok {
+		return false
+	}
+	sendClaudeRatelimitWeComAsync(webhook, BuildClaudeRatelimitMarkdown(account, model, state), reqID, authID, level)
+	return true
+}
+
+// sendClaudeRatelimitWeComAsync fires a WeCom notification off the request path:
+// fire-and-forget, detached from the (soon-cancelled) request context, and never
+// propagating a failure to the caller — failures are logged only.
+func sendClaudeRatelimitWeComAsync(webhook string, msg WeComMessage, reqID, authID, level string) {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -64,8 +76,6 @@ func MaybeAlertClaudeRatelimit(ctx context.Context, cfg *config.Config, auth *cl
 		}
 		entry.Infof("claude ratelimit alert (%s) sent", level)
 	}()
-
-	return true
 }
 
 // parseClaudeRatelimitCooldown parses a duration string (e.g. "5m"), falling back to

@@ -13,10 +13,11 @@ import (
 	"unicode/utf8"
 )
 
-// Alert tier levels returned by ShouldAlert.
+// Alert tier levels returned by ShouldAlert / ShouldNotifyBlock.
 const (
 	ClaudeRatelimitLevelAlert    = "alert"    // crossed the alert water line
 	ClaudeRatelimitLevelRejected = "rejected" // rejected / window full (used >= 1.0 or status "rejected")
+	ClaudeRatelimitLevelBlocked  = "blocked"  // crossed the block water line -> credential held unavailable
 )
 
 // authAlertState tracks debounce state for a single authID.
@@ -96,6 +97,54 @@ func (a *ClaudeRatelimitAlerter) ShouldAlert(authID string, state ClaudeRatelimi
 	return tier, true
 }
 
+// ShouldNotifyBlock reports whether a distinct "account blocked" notification should
+// fire for authID this window, returning the block-until time (the 5h window reset).
+//
+// It fires under exactly the condition the selector applies a block
+// (ShouldBlockClaudeRatelimit: 5h present, reset known, used ratio >= blockThreshold),
+// deduped to once per 5h window via the shared per-tier map. Unlike ShouldAlert it
+// intentionally does NOT consult or update the hard-cooldown timestamp, so a block notice
+// is never swallowed by a preceding alert within the cooldown interval (nor does it
+// suppress a later alert). A non-positive blockThreshold disables block notices.
+func (a *ClaudeRatelimitAlerter) ShouldNotifyBlock(authID string, state ClaudeRatelimitState, blockThreshold float64) (resetAt time.Time, ok bool) {
+	if blockThreshold <= 0 {
+		return time.Time{}, false
+	}
+	resetAt, blocked := ShouldBlockClaudeRatelimit(state, blockThreshold)
+	if !blocked {
+		return time.Time{}, false
+	}
+
+	// ShouldBlockClaudeRatelimit guarantees FiveHour is non-nil with a known reset.
+	windowKey := state.FiveHour.Reset.Unix()
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	st, exists := a.auths[authID]
+	if !exists {
+		st = &authAlertState{
+			windowKey:    windowKey,
+			alertedTiers: make(map[string]bool),
+		}
+		a.auths[authID] = st
+	}
+
+	// New window re-arm (shared with ShouldAlert; only clears on an actual window change).
+	if windowKey != st.windowKey {
+		st.windowKey = windowKey
+		st.alertedTiers = make(map[string]bool)
+	}
+
+	// Once-per-window dedup on the blocked tier. Deliberately no cooldown gate and no
+	// lastSent update, so alerts and block notices don't debounce each other.
+	if st.alertedTiers[ClaudeRatelimitLevelBlocked] {
+		return time.Time{}, false
+	}
+	st.alertedTiers[ClaudeRatelimitLevelBlocked] = true
+	return resetAt, true
+}
+
 // WeComMessage is the WeCom (企业微信) group-bot markdown message envelope.
 type WeComMessage struct {
 	MsgType  string        `json:"msgtype"`
@@ -152,6 +201,36 @@ func BuildClaudeRatelimitMarkdown(account, model string, state ClaudeRatelimitSt
 	content := sb.String()
 	content = clampUTF8(content, wecomMaxContentBytes)
 
+	return WeComMessage{
+		MsgType:  "markdown",
+		Markdown: WeComMarkdown{Content: content},
+	}
+}
+
+// BuildClaudeRatelimitBlockMarkdown builds the WeCom payload for an account-block notice:
+// the credential crossed the block water line and is now held unavailable (no longer
+// consumed via the proxy) until blockUntil — the 5h window reset.
+func BuildClaudeRatelimitBlockMarkdown(account, model string, state ClaudeRatelimitState, blockUntil time.Time) WeComMessage {
+	var sb strings.Builder
+
+	sb.WriteString("## Claude 账号已阻断\n\n")
+	sb.WriteString(fmt.Sprintf("**账号 (Account):** %s\n\n", account))
+	sb.WriteString(fmt.Sprintf("**模型 (Model):** %s\n\n", model))
+
+	if state.FiveHour != nil {
+		sb.WriteString(fmt.Sprintf("**5h 窗口使用率:** %.1f%%\n\n", state.FiveHour.UsedRatio*100))
+		if state.FiveHour.Status != "" {
+			sb.WriteString(fmt.Sprintf("**5h 窗口状态:** %s\n\n", state.FiveHour.Status))
+		}
+	}
+
+	blockStr := "未知"
+	if !blockUntil.IsZero() {
+		blockStr = blockUntil.Format("2006-01-02 15:04:05 MST")
+	}
+	sb.WriteString(fmt.Sprintf("**已阻断至 (窗口重置前不再经代理消耗):** %s\n\n", blockStr))
+
+	content := clampUTF8(sb.String(), wecomMaxContentBytes)
 	return WeComMessage{
 		MsgType:  "markdown",
 		Markdown: WeComMarkdown{Content: content},
