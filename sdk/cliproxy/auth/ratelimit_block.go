@@ -33,10 +33,19 @@ func (m *Manager) applyRatelimitBlock(authID string, resetAt time.Time) {
 	if m == nil || authID == "" {
 		return
 	}
+	if resetAt.IsZero() || !resetAt.After(time.Now()) {
+		return
+	}
 	now := time.Now()
 	var snapshot *Auth
 	m.mu.Lock()
 	if auth, ok := m.auths[authID]; ok && auth != nil {
+		// RatelimitBlockUntil is the durable source of truth for this block: it is
+		// checked directly by the selector and is never recomputed from ModelStates,
+		// so a subsequent successful-request MarkResult (which resets ModelStates and
+		// recomputes Unavailable) cannot clear it. The aggregate fields below are set
+		// for immediate effect and status visibility only.
+		auth.RatelimitBlockUntil = resetAt
 		auth.Unavailable = true
 		auth.Status = StatusError
 		auth.StatusMessage = "claude 5h rate limit reached; blocked until window reset"

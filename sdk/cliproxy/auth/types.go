@@ -86,6 +86,12 @@ type Auth struct {
 	NextRefreshAfter time.Time `json:"next_refresh_after"`
 	// NextRetryAfter is the earliest time a retry should retrigger.
 	NextRetryAfter time.Time `json:"next_retry_after"`
+	// RatelimitBlockUntil is an account-level temporary block driven by an out-of-band
+	// signal (e.g. Claude's unified 5h rate-limit headers). Unlike Unavailable/NextRetryAfter,
+	// this field is NOT recomputed from ModelStates by updateAggregatedAvailability, so a
+	// successful request's MarkResult cannot silently clear it. Zero means no block; the
+	// block auto-recovers once this time passes. Applies to all models under the auth.
+	RatelimitBlockUntil time.Time `json:"ratelimit_block_until,omitempty"`
 	// ModelStates tracks per-model runtime availability data.
 	ModelStates map[string]*ModelState `json:"model_states,omitempty"`
 
