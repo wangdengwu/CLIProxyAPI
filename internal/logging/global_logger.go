@@ -34,6 +34,7 @@ var logFieldOrder = []string{"provider", "model", "mode", "budget", "level", "or
 	"auth_id", "auth_label", "account",
 	"ratelimit_5h_utilization", "ratelimit_5h_status", "ratelimit_5h_reset",
 	"ratelimit_7d_utilization", "ratelimit_7d_status", "ratelimit_7d_reset",
+	"ratelimit_block_until", "reset",
 	"error"}
 
 // Format renders a single log entry with custom formatting.
