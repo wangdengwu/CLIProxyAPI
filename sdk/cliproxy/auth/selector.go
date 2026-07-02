@@ -375,6 +375,14 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 	if auth.Disabled || auth.Status == StatusDisabled {
 		return true, blockReasonDisabled, time.Time{}
 	}
+	// Durable account-level rate-limit block (e.g. Claude's shared 5h budget). Checked
+	// first and independently of the aggregate Unavailable flag because that flag is
+	// recomputed from ModelStates on every MarkResult; RatelimitBlockUntil is not, so it
+	// survives successful requests. Zero value never blocks, so accounts that never
+	// reported a 5h/7d limit are unaffected. Auto-recovers once the reset time passes.
+	if !auth.RatelimitBlockUntil.IsZero() && auth.RatelimitBlockUntil.After(now) {
+		return true, blockReasonOther, auth.RatelimitBlockUntil
+	}
 	// Account-level temporary block applies to ALL models (e.g. a shared 5h
 	// subscription budget): an auth marked unavailable until NextRetryAfter must be
 	// skipped regardless of the requested model, and auto-recovers once that time
