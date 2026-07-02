@@ -3,6 +3,8 @@ package auth
 import (
 	"sync/atomic"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 // activeRatelimitTarget holds the most recently constructed Manager so callers that
@@ -20,9 +22,15 @@ func ApplyRatelimitBlock(authID string, resetAt time.Time) {
 	if authID == "" {
 		return
 	}
-	if m := activeRatelimitTarget.Load(); m != nil {
-		m.applyRatelimitBlock(authID, resetAt)
+	m := activeRatelimitTarget.Load()
+	if m == nil {
+		// Diagnostic: block requested but no Manager registered itself as the active
+		// target. In a normal single-Manager deployment this should never happen; if it
+		// does, the block silently does nothing.
+		log.WithField("auth_id", authID).Warn("claude ratelimit block skipped: no active manager")
+		return
 	}
+	m.applyRatelimitBlock(authID, resetAt)
 }
 
 // applyRatelimitBlock marks the auth account-level unavailable until resetAt, mirroring
@@ -34,12 +42,16 @@ func (m *Manager) applyRatelimitBlock(authID string, resetAt time.Time) {
 		return
 	}
 	if resetAt.IsZero() || !resetAt.After(time.Now()) {
+		log.WithFields(log.Fields{"auth_id": authID, "reset": resetAt.Format(time.RFC3339)}).
+			Warn("claude ratelimit block skipped: reset is zero or already past")
 		return
 	}
 	now := time.Now()
 	var snapshot *Auth
+	found := false
 	m.mu.Lock()
 	if auth, ok := m.auths[authID]; ok && auth != nil {
+		found = true
 		// RatelimitBlockUntil is the durable source of truth for this block: it is
 		// checked directly by the selector and is never recomputed from ModelStates,
 		// so a subsequent successful-request MarkResult (which resets ModelStates and
@@ -54,7 +66,17 @@ func (m *Manager) applyRatelimitBlock(authID string, resetAt time.Time) {
 		snapshot = auth.Clone()
 	}
 	m.mu.Unlock()
+	if !found {
+		// Diagnostic: the executor asked to block an auth ID that the Manager does not
+		// have in its map. Indicates an ID mismatch or that the auth set was reloaded.
+		log.WithField("auth_id", authID).Warn("claude ratelimit block skipped: auth id not found in manager")
+		return
+	}
 	if snapshot != nil && m.scheduler != nil {
 		m.scheduler.upsertAuth(snapshot)
 	}
+	log.WithFields(log.Fields{
+		"auth_id":               authID,
+		"ratelimit_block_until": resetAt.Format(time.RFC3339),
+	}).Info("claude ratelimit block applied")
 }
