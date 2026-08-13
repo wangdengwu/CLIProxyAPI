@@ -42,26 +42,20 @@ func NewClaudeRatelimitAlerter() *ClaudeRatelimitAlerter {
 }
 
 // ShouldAlert decides whether an alert should be sent for authID given the latest
-// state. Pure decision over in-memory state (NO IO, NO time.Now() inside — use the
-// passed `now`). Returns the tier and true iff a notification should fire now.
-func (a *ClaudeRatelimitAlerter) ShouldAlert(authID string, state ClaudeRatelimitState, alertThreshold float64, cooldown time.Duration, now time.Time) (level string, ok bool) {
-	if state.FiveHour == nil {
-		return "", false
-	}
-
-	w := state.FiveHour
-
-	// Determine tier.
+// state and resolved policy decision. Pure decision over in-memory state (NO IO, NO
+// time.Now() inside — use the passed `now`). Returns the tier and true iff a
+// notification should fire now.
+func (a *ClaudeRatelimitAlerter) ShouldAlert(authID string, state ClaudeRatelimitState, decision ClaudeRatelimitDecision, cooldown time.Duration, now time.Time) (level string, ok bool) {
 	var tier string
-	if w.Status == "rejected" || w.UsedRatio >= 1.0 {
+	if decision.NaturalFull {
 		tier = ClaudeRatelimitLevelRejected
-	} else if w.UsedRatio >= alertThreshold {
+	} else if decision.Mode == ClaudeUsageModeShared && state.FiveHour != nil && state.FiveHour.UsedRatio >= decision.AlertThreshold {
 		tier = ClaudeRatelimitLevelAlert
 	} else {
 		return "", false
 	}
 
-	windowKey := w.Reset.Unix()
+	windowKey := claudeAlertWindowKey(state, decision)
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -98,25 +92,18 @@ func (a *ClaudeRatelimitAlerter) ShouldAlert(authID string, state ClaudeRatelimi
 }
 
 // ShouldNotifyBlock reports whether a distinct "account blocked" notification should
-// fire for authID this window, returning the block-until time (the 5h window reset).
+// fire for authID this window, returning the block-until time.
 //
-// It fires under exactly the condition the selector applies a block
-// (ShouldBlockClaudeRatelimit: 5h present, reset known, used ratio >= blockThreshold),
-// deduped to once per 5h window via the shared per-tier map. Unlike ShouldAlert it
-// intentionally does NOT consult or update the hard-cooldown timestamp, so a block notice
-// is never swallowed by a preceding alert within the cooldown interval (nor does it
-// suppress a later alert). A non-positive blockThreshold disables block notices.
-func (a *ClaudeRatelimitAlerter) ShouldNotifyBlock(authID string, state ClaudeRatelimitState, blockThreshold float64) (resetAt time.Time, ok bool) {
-	if blockThreshold <= 0 {
-		return time.Time{}, false
-	}
-	resetAt, blocked := ShouldBlockClaudeRatelimit(state, blockThreshold)
-	if !blocked {
+// It fires exactly when the resolved policy decided to proactively block this account,
+// deduped once per block window. Unlike ShouldAlert it intentionally does NOT consult or
+// update the hard-cooldown timestamp, so a block notice is never swallowed by a preceding
+// alert within the cooldown interval.
+func (a *ClaudeRatelimitAlerter) ShouldNotifyBlock(authID string, decision ClaudeRatelimitDecision) (resetAt time.Time, ok bool) {
+	if !decision.Block || decision.BlockUntil.IsZero() {
 		return time.Time{}, false
 	}
 
-	// ShouldBlockClaudeRatelimit guarantees FiveHour is non-nil with a known reset.
-	windowKey := state.FiveHour.Reset.Unix()
+	windowKey := decision.BlockUntil.Unix()
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -142,7 +129,7 @@ func (a *ClaudeRatelimitAlerter) ShouldNotifyBlock(authID string, state ClaudeRa
 		return time.Time{}, false
 	}
 	st.alertedTiers[ClaudeRatelimitLevelBlocked] = true
-	return resetAt, true
+	return decision.BlockUntil, true
 }
 
 // WeComMessage is the WeCom (企业微信) group-bot markdown message envelope.
@@ -161,12 +148,16 @@ const wecomMaxContentBytes = 4096
 // BuildClaudeRatelimitMarkdown builds the WeCom markdown payload for a rate-limit
 // notification. `account` is a human-readable credential identifier (email/label/id),
 // `model` the requested model.
-func BuildClaudeRatelimitMarkdown(account, model string, state ClaudeRatelimitState) WeComMessage {
+func BuildClaudeRatelimitMarkdown(account, model string, state ClaudeRatelimitState, decision ClaudeRatelimitDecision) WeComMessage {
 	var sb strings.Builder
 
 	sb.WriteString("## Claude 速率限制告警\n\n")
 	sb.WriteString(fmt.Sprintf("**账号 (Account):** %s\n\n", account))
 	sb.WriteString(fmt.Sprintf("**模型 (Model):** %s\n\n", model))
+	sb.WriteString(fmt.Sprintf("**账号模式:** %s\n\n", claudeModeLabel(decision.Mode)))
+	sb.WriteString(fmt.Sprintf("**当前时段:** %s\n\n", claudePeriodLabel(decision)))
+	sb.WriteString(fmt.Sprintf("**动态 5h 阻断阈值:** %.1f%%\n\n", decision.FiveHourThreshold*100))
+	sb.WriteString(fmt.Sprintf("**触发原因:** %s\n\n", claudeAlertReasonLabel(decision)))
 
 	// 5h section — always present.
 	if state.FiveHour != nil {
@@ -192,10 +183,13 @@ func BuildClaudeRatelimitMarkdown(account, model string, state ClaudeRatelimitSt
 			resetStr = w.Reset.Format("2006-01-02 15:04:05 MST")
 		}
 		sb.WriteString(fmt.Sprintf("**7d 窗口使用率:** %.1f%%\n\n", w.UsedRatio*100))
+		sb.WriteString(fmt.Sprintf("**7d 窗口剩余率:** %.1f%%\n\n", (1-w.UsedRatio)*100))
 		if w.Status != "" {
 			sb.WriteString(fmt.Sprintf("**7d 窗口状态:** %s\n\n", w.Status))
 		}
 		sb.WriteString(fmt.Sprintf("**7d 窗口重置时间:** %s\n\n", resetStr))
+	} else {
+		sb.WriteString("**7d 窗口:** 无数据\n\n")
 	}
 
 	content := sb.String()
@@ -207,15 +201,16 @@ func BuildClaudeRatelimitMarkdown(account, model string, state ClaudeRatelimitSt
 	}
 }
 
-// BuildClaudeRatelimitBlockMarkdown builds the WeCom payload for an account-block notice:
-// the credential crossed the block water line and is now held unavailable (no longer
-// consumed via the proxy) until blockUntil — the 5h window reset.
-func BuildClaudeRatelimitBlockMarkdown(account, model string, state ClaudeRatelimitState, blockUntil time.Time) WeComMessage {
+// BuildClaudeRatelimitBlockMarkdown builds the WeCom payload for a proactive account-block
+// notice. It is used only when the policy actually decided to hold the credential.
+func BuildClaudeRatelimitBlockMarkdown(account, model string, state ClaudeRatelimitState, decision ClaudeRatelimitDecision) WeComMessage {
 	var sb strings.Builder
 
 	sb.WriteString("## Claude 账号已阻断\n\n")
 	sb.WriteString(fmt.Sprintf("**账号 (Account):** %s\n\n", account))
 	sb.WriteString(fmt.Sprintf("**模型 (Model):** %s\n\n", model))
+	sb.WriteString(fmt.Sprintf("**账号模式:** %s\n\n", claudeModeLabel(decision.Mode)))
+	sb.WriteString(fmt.Sprintf("**阻断原因:** %s\n\n", claudeBlockReasonLabel(decision.BlockReason)))
 
 	if state.FiveHour != nil {
 		sb.WriteString(fmt.Sprintf("**5h 窗口使用率:** %.1f%%\n\n", state.FiveHour.UsedRatio*100))
@@ -223,10 +218,16 @@ func BuildClaudeRatelimitBlockMarkdown(account, model string, state ClaudeRateli
 			sb.WriteString(fmt.Sprintf("**5h 窗口状态:** %s\n\n", state.FiveHour.Status))
 		}
 	}
+	if state.SevenDay != nil {
+		sb.WriteString(fmt.Sprintf("**7d 窗口使用率:** %.1f%%\n\n", state.SevenDay.UsedRatio*100))
+		if state.SevenDay.Status != "" {
+			sb.WriteString(fmt.Sprintf("**7d 窗口状态:** %s\n\n", state.SevenDay.Status))
+		}
+	}
 
 	blockStr := "未知"
-	if !blockUntil.IsZero() {
-		blockStr = blockUntil.Format("2006-01-02 15:04:05 MST")
+	if !decision.BlockUntil.IsZero() {
+		blockStr = decision.BlockUntil.Format("2006-01-02 15:04:05 MST")
 	}
 	sb.WriteString(fmt.Sprintf("**已阻断至 (窗口重置前不再经代理消耗):** %s\n\n", blockStr))
 
@@ -234,6 +235,66 @@ func BuildClaudeRatelimitBlockMarkdown(account, model string, state ClaudeRateli
 	return WeComMessage{
 		MsgType:  "markdown",
 		Markdown: WeComMarkdown{Content: content},
+	}
+}
+
+func claudeAlertWindowKey(state ClaudeRatelimitState, decision ClaudeRatelimitDecision) int64 {
+	if decision.NaturalFull {
+		if strings.Contains(decision.NaturalFullWindow, "7d") && state.SevenDay != nil && !state.SevenDay.Reset.IsZero() {
+			return state.SevenDay.Reset.Unix()
+		}
+		if strings.Contains(decision.NaturalFullWindow, "5h") && state.FiveHour != nil && !state.FiveHour.Reset.IsZero() {
+			return state.FiveHour.Reset.Unix()
+		}
+	}
+	if state.FiveHour != nil && !state.FiveHour.Reset.IsZero() {
+		return state.FiveHour.Reset.Unix()
+	}
+	if state.SevenDay != nil && !state.SevenDay.Reset.IsZero() {
+		return state.SevenDay.Reset.Unix()
+	}
+	return 0
+}
+
+func claudeModeLabel(mode ClaudeUsageMode) string {
+	switch mode {
+	case ClaudeUsageModeDedicated:
+		return "dedicated（独占，不主动拦截）"
+	case ClaudeUsageModeShared:
+		return "shared（共享，动态保护）"
+	default:
+		return string(mode)
+	}
+}
+
+func claudePeriodLabel(decision ClaudeRatelimitDecision) string {
+	if decision.Mode == ClaudeUsageModeDedicated {
+		return "不区分时段"
+	}
+	if decision.IsNight {
+		return "夜间窗口"
+	}
+	return "日间窗口"
+}
+
+func claudeAlertReasonLabel(decision ClaudeRatelimitDecision) string {
+	if decision.NaturalFull {
+		return "上游自然满额/拒绝：" + decision.NaturalFullWindow
+	}
+	if decision.Mode == ClaudeUsageModeShared {
+		return "共享账号 7d 额度保护下的动态阈值"
+	}
+	return "速率限制告警"
+}
+
+func claudeBlockReasonLabel(reason string) string {
+	switch reason {
+	case ClaudeRatelimitBlockReasonSevenDayExhausted:
+		return "7d 额度接近耗尽，保护共享账号主人"
+	case ClaudeRatelimitBlockReasonFiveHourThreshold:
+		return "当前 5h 窗口达到动态保护阈值"
+	default:
+		return reason
 	}
 }
 

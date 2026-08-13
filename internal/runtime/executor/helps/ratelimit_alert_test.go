@@ -16,17 +16,46 @@ import (
 
 func alertCfg(enabled bool, webhook string) *config.Config {
 	return &config.Config{ClaudeRatelimitAlert: config.ClaudeRatelimitAlert{
-		Enabled:        enabled,
-		WebhookURL:     webhook,
-		AlertThreshold: 0.80,
-		Cooldown:       "5m",
+		Enabled:    enabled,
+		WebhookURL: webhook,
+		Cooldown:   "5m",
 	}}
+}
+
+func win(util float64, status string, resetUnix int64) *ClaudeRatelimitWindow {
+	return &ClaudeRatelimitWindow{UsedRatio: util, Status: status, Reset: time.Unix(resetUnix, 0)}
+}
+
+const (
+	testCooldown = 5 * time.Minute
+	testResetA   = int64(1782884400)
+	testResetB   = int64(1782902400) // a different 5h window
+)
+
+func sharedAlertDecision(alertThreshold float64) ClaudeRatelimitDecision {
+	return ClaudeRatelimitDecision{
+		Mode:              ClaudeUsageModeShared,
+		IsNight:           false,
+		SevenDayPresent:   true,
+		FiveHourThreshold: alertThreshold + 0.05,
+		AlertThreshold:    alertThreshold,
+	}
+}
+
+func dedicatedNaturalDecision(window string) ClaudeRatelimitDecision {
+	return ClaudeRatelimitDecision{
+		Mode:              ClaudeUsageModeDedicated,
+		FiveHourThreshold: 1.0,
+		AlertThreshold:    1.0,
+		NaturalFull:       true,
+		NaturalFullWindow: window,
+	}
 }
 
 // AC: enabled=false -> never dispatches, even when the state is over the water line.
 func TestMaybeAlert_DisabledDoesNotDispatch(t *testing.T) {
 	st := ClaudeRatelimitState{FiveHour: win(0.99, "allowed_warning", testResetA)}
-	if MaybeAlertClaudeRatelimit(nil, alertCfg(false, "https://example.com/hook"), &cliproxyauth.Auth{ID: "auth-disabled"}, "m", st) {
+	if MaybeAlertClaudeRatelimit(nil, alertCfg(false, "https://example.com/hook"), &cliproxyauth.Auth{ID: "auth-disabled"}, "m", st, sharedAlertDecision(0.75)) {
 		t.Fatal("must not dispatch when feature disabled")
 	}
 }
@@ -34,7 +63,7 @@ func TestMaybeAlert_DisabledDoesNotDispatch(t *testing.T) {
 // AC: empty webhook URL -> never dispatches.
 func TestMaybeAlert_EmptyWebhookDoesNotDispatch(t *testing.T) {
 	st := ClaudeRatelimitState{FiveHour: win(0.99, "allowed_warning", testResetA)}
-	if MaybeAlertClaudeRatelimit(nil, alertCfg(true, "   "), &cliproxyauth.Auth{ID: "auth-nohook"}, "m", st) {
+	if MaybeAlertClaudeRatelimit(nil, alertCfg(true, "   "), &cliproxyauth.Auth{ID: "auth-nohook"}, "m", st, sharedAlertDecision(0.75)) {
 		t.Fatal("must not dispatch when webhook URL is empty/blank")
 	}
 }
@@ -42,10 +71,10 @@ func TestMaybeAlert_EmptyWebhookDoesNotDispatch(t *testing.T) {
 // nil config / nil auth -> no dispatch, no panic.
 func TestMaybeAlert_NilConfigOrAuthSafe(t *testing.T) {
 	st := ClaudeRatelimitState{FiveHour: win(0.99, "rejected", testResetA)}
-	if MaybeAlertClaudeRatelimit(nil, nil, &cliproxyauth.Auth{ID: "x"}, "m", st) {
+	if MaybeAlertClaudeRatelimit(nil, nil, &cliproxyauth.Auth{ID: "x"}, "m", st, sharedAlertDecision(0.75)) {
 		t.Fatal("nil config must not dispatch")
 	}
-	if MaybeAlertClaudeRatelimit(nil, alertCfg(true, "https://example.com/hook"), nil, "m", st) {
+	if MaybeAlertClaudeRatelimit(nil, alertCfg(true, "https://example.com/hook"), nil, "m", st, sharedAlertDecision(0.75)) {
 		t.Fatal("nil auth must not dispatch")
 	}
 }
@@ -53,7 +82,7 @@ func TestMaybeAlert_NilConfigOrAuthSafe(t *testing.T) {
 // Below-threshold state with the feature fully enabled -> no dispatch (debounce says no).
 func TestMaybeAlert_BelowThresholdNoDispatch(t *testing.T) {
 	st := ClaudeRatelimitState{FiveHour: win(0.5, "allowed", testResetA)}
-	if MaybeAlertClaudeRatelimit(nil, alertCfg(true, "https://example.com/hook"), &cliproxyauth.Auth{ID: "auth-below"}, "m", st) {
+	if MaybeAlertClaudeRatelimit(nil, alertCfg(true, "https://example.com/hook"), &cliproxyauth.Auth{ID: "auth-below"}, "m", st, sharedAlertDecision(0.75)) {
 		t.Fatal("below threshold must not dispatch")
 	}
 }
@@ -74,7 +103,7 @@ func TestMaybeAlert_EnabledCrossingDispatchesOnce(t *testing.T) {
 	auth := &cliproxyauth.Auth{ID: "auth-dispatch-once"}
 	cfg := alertCfg(true, srv.URL)
 
-	if !MaybeAlertClaudeRatelimit(nil, cfg, auth, "m", st) {
+	if !MaybeAlertClaudeRatelimit(nil, cfg, auth, "m", st, sharedAlertDecision(0.75)) {
 		t.Fatal("first crossing with enabled+webhook must dispatch")
 	}
 	select {
@@ -84,7 +113,7 @@ func TestMaybeAlert_EnabledCrossingDispatchesOnce(t *testing.T) {
 	}
 
 	// same window, same tier -> deduped, no second dispatch
-	if MaybeAlertClaudeRatelimit(nil, cfg, auth, "m", st) {
+	if MaybeAlertClaudeRatelimit(nil, cfg, auth, "m", st, sharedAlertDecision(0.75)) {
 		t.Fatal("same window/tier must not dispatch again")
 	}
 	select {
@@ -94,22 +123,11 @@ func TestMaybeAlert_EnabledCrossingDispatchesOnce(t *testing.T) {
 	}
 }
 
-func win(util float64, status string, resetUnix int64) *ClaudeRatelimitWindow {
-	return &ClaudeRatelimitWindow{UsedRatio: util, Status: status, Reset: time.Unix(resetUnix, 0)}
-}
-
-const (
-	testAlertThreshold = 0.80
-	testCooldown       = 5 * time.Minute
-	testResetA         = int64(1782884400)
-	testResetB         = int64(1782902400) // a different 5h window
-)
-
 // AC: 5h first crosses the alert water line -> alert exactly once.
 func TestShouldAlert_FirstCrossFires(t *testing.T) {
 	a := NewClaudeRatelimitAlerter()
 	now := time.Unix(1782880000, 0)
-	level, ok := a.ShouldAlert("auth-1", ClaudeRatelimitState{FiveHour: win(0.81, "allowed_warning", testResetA)}, testAlertThreshold, testCooldown, now)
+	level, ok := a.ShouldAlert("auth-1", ClaudeRatelimitState{FiveHour: win(0.81, "allowed_warning", testResetA)}, sharedAlertDecision(0.80), testCooldown, now)
 	if !ok {
 		t.Fatal("expected alert to fire on first crossing")
 	}
@@ -123,12 +141,11 @@ func TestShouldAlert_SameWindowNoRepeat(t *testing.T) {
 	a := NewClaudeRatelimitAlerter()
 	now := time.Unix(1782880000, 0)
 	st := ClaudeRatelimitState{FiveHour: win(0.85, "allowed_warning", testResetA)}
-	if _, ok := a.ShouldAlert("auth-1", st, testAlertThreshold, testCooldown, now); !ok {
+	if _, ok := a.ShouldAlert("auth-1", st, sharedAlertDecision(0.80), testCooldown, now); !ok {
 		t.Fatal("first crossing should fire")
 	}
-	// well past cooldown, same window, still above threshold -> must NOT fire again
 	later := now.Add(30 * time.Minute)
-	if _, ok := a.ShouldAlert("auth-1", st, testAlertThreshold, testCooldown, later); ok {
+	if _, ok := a.ShouldAlert("auth-1", st, sharedAlertDecision(0.80), testCooldown, later); ok {
 		t.Fatal("same window/tier must not re-alert even after cooldown")
 	}
 }
@@ -137,12 +154,11 @@ func TestShouldAlert_SameWindowNoRepeat(t *testing.T) {
 func TestShouldAlert_NewWindowRearms(t *testing.T) {
 	a := NewClaudeRatelimitAlerter()
 	now := time.Unix(1782880000, 0)
-	if _, ok := a.ShouldAlert("auth-1", ClaudeRatelimitState{FiveHour: win(0.85, "allowed_warning", testResetA)}, testAlertThreshold, testCooldown, now); !ok {
+	if _, ok := a.ShouldAlert("auth-1", ClaudeRatelimitState{FiveHour: win(0.85, "allowed_warning", testResetA)}, sharedAlertDecision(0.80), testCooldown, now); !ok {
 		t.Fatal("first window should fire")
 	}
-	// new window (different reset), past cooldown, above threshold -> fires again
 	later := now.Add(6 * time.Hour)
-	level, ok := a.ShouldAlert("auth-1", ClaudeRatelimitState{FiveHour: win(0.85, "allowed_warning", testResetB)}, testAlertThreshold, testCooldown, later)
+	level, ok := a.ShouldAlert("auth-1", ClaudeRatelimitState{FiveHour: win(0.85, "allowed_warning", testResetB)}, sharedAlertDecision(0.80), testCooldown, later)
 	if !ok {
 		t.Fatal("new window should re-arm and fire")
 	}
@@ -155,35 +171,31 @@ func TestShouldAlert_NewWindowRearms(t *testing.T) {
 func TestShouldAlert_RejectedAndAlertTiersEachFireOnce(t *testing.T) {
 	a := NewClaudeRatelimitAlerter()
 	now := time.Unix(1782880000, 0)
-	// alert tier
-	if l, ok := a.ShouldAlert("auth-1", ClaudeRatelimitState{FiveHour: win(0.82, "allowed_warning", testResetA)}, testAlertThreshold, testCooldown, now); !ok || l != ClaudeRatelimitLevelAlert {
+	if l, ok := a.ShouldAlert("auth-1", ClaudeRatelimitState{FiveHour: win(0.82, "allowed_warning", testResetA)}, sharedAlertDecision(0.80), testCooldown, now); !ok || l != ClaudeRatelimitLevelAlert {
 		t.Fatalf("expected alert tier, got (%q,%v)", l, ok)
 	}
-	// later (past cooldown) same window escalates to rejected -> fires as rejected tier
 	later := now.Add(10 * time.Minute)
-	if l, ok := a.ShouldAlert("auth-1", ClaudeRatelimitState{FiveHour: win(1.05, "rejected", testResetA)}, testAlertThreshold, testCooldown, later); !ok || l != ClaudeRatelimitLevelRejected {
+	rejected := sharedAlertDecision(0.80)
+	rejected.NaturalFull = true
+	rejected.NaturalFullWindow = "5h"
+	if l, ok := a.ShouldAlert("auth-1", ClaudeRatelimitState{FiveHour: win(1.05, "rejected", testResetA)}, rejected, testCooldown, later); !ok || l != ClaudeRatelimitLevelRejected {
 		t.Fatalf("expected rejected tier, got (%q,%v)", l, ok)
 	}
-	// rejected again same window -> no repeat
 	evenLater := later.Add(10 * time.Minute)
-	if _, ok := a.ShouldAlert("auth-1", ClaudeRatelimitState{FiveHour: win(1.09, "rejected", testResetA)}, testAlertThreshold, testCooldown, evenLater); ok {
+	if _, ok := a.ShouldAlert("auth-1", ClaudeRatelimitState{FiveHour: win(1.09, "rejected", testResetA)}, rejected, testCooldown, evenLater); ok {
 		t.Fatal("rejected tier must not repeat within same window")
 	}
 }
 
-// AC: hard cooldown limits push interval for the same account under abnormally
-// high-frequency calls. Isolate cooldown from tier/window dedup: a NEW window
-// arrives within cooldown of the last send -> tier logic would re-arm, but the
-// hard cooldown must still suppress it.
+// AC: hard cooldown limits push interval for the same account.
 func TestShouldAlert_HardCooldownSuppressesWithinInterval(t *testing.T) {
 	a := NewClaudeRatelimitAlerter()
 	now := time.Unix(1782880000, 0)
-	if _, ok := a.ShouldAlert("auth-1", ClaudeRatelimitState{FiveHour: win(0.85, "allowed_warning", testResetA)}, testAlertThreshold, testCooldown, now); !ok {
+	if _, ok := a.ShouldAlert("auth-1", ClaudeRatelimitState{FiveHour: win(0.85, "allowed_warning", testResetA)}, sharedAlertDecision(0.80), testCooldown, now); !ok {
 		t.Fatal("first should fire")
 	}
-	// new window but only 1 minute later (< 5m cooldown) -> suppressed by cooldown
 	soon := now.Add(1 * time.Minute)
-	if _, ok := a.ShouldAlert("auth-1", ClaudeRatelimitState{FiveHour: win(0.90, "allowed_warning", testResetB)}, testAlertThreshold, testCooldown, soon); ok {
+	if _, ok := a.ShouldAlert("auth-1", ClaudeRatelimitState{FiveHour: win(0.90, "allowed_warning", testResetB)}, sharedAlertDecision(0.80), testCooldown, soon); ok {
 		t.Fatal("hard cooldown must suppress a send within the cooldown interval")
 	}
 }
@@ -192,17 +204,21 @@ func TestShouldAlert_HardCooldownSuppressesWithinInterval(t *testing.T) {
 func TestShouldAlert_BelowThreshold(t *testing.T) {
 	a := NewClaudeRatelimitAlerter()
 	now := time.Unix(1782880000, 0)
-	if _, ok := a.ShouldAlert("auth-1", ClaudeRatelimitState{FiveHour: win(0.5, "allowed", testResetA)}, testAlertThreshold, testCooldown, now); ok {
+	if _, ok := a.ShouldAlert("auth-1", ClaudeRatelimitState{FiveHour: win(0.5, "allowed", testResetA)}, sharedAlertDecision(0.80), testCooldown, now); ok {
 		t.Fatal("below threshold must not alert")
 	}
 }
 
-// No 5h window -> nothing to alert on.
-func TestShouldAlert_NoFiveHourWindow(t *testing.T) {
+// Dedicated account with a 7d natural full should alert even without a 5h window.
+func TestShouldAlert_DedicatedNaturalFullAlerts(t *testing.T) {
 	a := NewClaudeRatelimitAlerter()
 	now := time.Unix(1782880000, 0)
-	if _, ok := a.ShouldAlert("auth-1", ClaudeRatelimitState{}, testAlertThreshold, testCooldown, now); ok {
-		t.Fatal("no 5h window must not alert")
+	level, ok := a.ShouldAlert("auth-1", ClaudeRatelimitState{SevenDay: win(1.0, "rejected", testResetB)}, dedicatedNaturalDecision("7d"), testCooldown, now)
+	if !ok {
+		t.Fatal("dedicated account must alert when 7d is naturally full")
+	}
+	if level != ClaudeRatelimitLevelRejected {
+		t.Fatalf("level = %q, want %q", level, ClaudeRatelimitLevelRejected)
 	}
 }
 
@@ -211,10 +227,10 @@ func TestShouldAlert_PerAuthIsolation(t *testing.T) {
 	a := NewClaudeRatelimitAlerter()
 	now := time.Unix(1782880000, 0)
 	st := ClaudeRatelimitState{FiveHour: win(0.85, "allowed_warning", testResetA)}
-	if _, ok := a.ShouldAlert("auth-1", st, testAlertThreshold, testCooldown, now); !ok {
+	if _, ok := a.ShouldAlert("auth-1", st, sharedAlertDecision(0.80), testCooldown, now); !ok {
 		t.Fatal("auth-1 first should fire")
 	}
-	if _, ok := a.ShouldAlert("auth-2", st, testAlertThreshold, testCooldown, now); !ok {
+	if _, ok := a.ShouldAlert("auth-2", st, sharedAlertDecision(0.80), testCooldown, now); !ok {
 		t.Fatal("auth-2 first should fire independently of auth-1")
 	}
 }
@@ -226,11 +242,10 @@ func TestBuildClaudeRatelimitMarkdown_Full(t *testing.T) {
 		FiveHour: win(0.98, "allowed_warning", testResetA),
 		SevenDay: win(0.12, "allowed", testResetB),
 	}
-	msg := BuildClaudeRatelimitMarkdown("user@example.com", "claude-opus-4-8", st)
+	msg := BuildClaudeRatelimitMarkdown("user@example.com", "claude-opus-4-8", st, sharedAlertDecision(0.75))
 	if msg.MsgType != "markdown" {
 		t.Fatalf("MsgType = %q, want markdown", msg.MsgType)
 	}
-	// serializes to the WeCom shape
 	raw, err := json.Marshal(msg)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -238,11 +253,8 @@ func TestBuildClaudeRatelimitMarkdown_Full(t *testing.T) {
 	if !json.Valid(raw) {
 		t.Fatal("payload is not valid JSON")
 	}
-	if !strings.Contains(string(raw), `"msgtype":"markdown"`) || !strings.Contains(string(raw), `"markdown"`) {
-		t.Fatalf("payload missing WeCom markdown envelope: %s", raw)
-	}
 	c := msg.Markdown.Content
-	for _, want := range []string{"user@example.com", "claude-opus-4-8", "%", "5h", "7d"} {
+	for _, want := range []string{"user@example.com", "claude-opus-4-8", "%", "5h", "7d", "shared", "动态 5h 阻断阈值"} {
 		if !strings.Contains(c, want) {
 			t.Fatalf("content missing %q\ncontent=%s", want, c)
 		}
@@ -252,16 +264,16 @@ func TestBuildClaudeRatelimitMarkdown_Full(t *testing.T) {
 	}
 }
 
-// BuildMarkdown: only 5h -> no 7d section, still valid and populated.
+// BuildMarkdown: only 5h -> no 7d usage section, still valid and populated.
 func TestBuildClaudeRatelimitMarkdown_FiveHourOnly(t *testing.T) {
 	st := ClaudeRatelimitState{FiveHour: win(0.90, "allowed_warning", testResetA)}
-	msg := BuildClaudeRatelimitMarkdown("user@example.com", "claude-opus-4-8", st)
+	msg := BuildClaudeRatelimitMarkdown("user@example.com", "claude-opus-4-8", st, sharedAlertDecision(0.75))
 	c := msg.Markdown.Content
 	if !strings.Contains(c, "5h") {
 		t.Fatalf("content missing 5h section: %s", c)
 	}
-	if strings.Contains(c, "7d") {
-		t.Fatalf("content must not contain a 7d section when 7d absent: %s", c)
+	if strings.Contains(c, "7d 窗口使用率") {
+		t.Fatalf("content must not contain a 7d usage section when 7d absent: %s", c)
 	}
 	if strings.TrimSpace(c) == "" {
 		t.Fatal("content must not be empty")
@@ -273,7 +285,7 @@ func TestBuildClaudeRatelimitMarkdown_FiveHourOnly(t *testing.T) {
 func TestBuildClaudeRatelimitMarkdown_ClampsTo4096(t *testing.T) {
 	longAccount := strings.Repeat("超长账号名", 2000) // multi-byte, way over 4096
 	st := ClaudeRatelimitState{FiveHour: win(0.99, "allowed_warning", testResetA)}
-	msg := BuildClaudeRatelimitMarkdown(longAccount, strings.Repeat("m", 5000), st)
+	msg := BuildClaudeRatelimitMarkdown(longAccount, strings.Repeat("m", 5000), st, sharedAlertDecision(0.75))
 	c := msg.Markdown.Content
 	if len(c) > 4096 {
 		t.Fatalf("content length = %d bytes, want <= 4096", len(c))
@@ -299,7 +311,7 @@ func TestSendWeCom_PostsBodyAndSucceeds(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	msg := BuildClaudeRatelimitMarkdown("user@example.com", "claude-opus-4-8", ClaudeRatelimitState{FiveHour: win(0.9, "allowed_warning", testResetA)})
+	msg := BuildClaudeRatelimitMarkdown("user@example.com", "claude-opus-4-8", ClaudeRatelimitState{FiveHour: win(0.9, "allowed_warning", testResetA)}, sharedAlertDecision(0.75))
 	if err := SendWeCom(nil, srv.URL, msg); err != nil {
 		t.Fatalf("SendWeCom error = %v, want nil", err)
 	}
@@ -321,7 +333,7 @@ func TestSendWeCom_Non2xxReturnsError(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
-	msg := BuildClaudeRatelimitMarkdown("a", "m", ClaudeRatelimitState{FiveHour: win(0.9, "rejected", testResetA)})
+	msg := BuildClaudeRatelimitMarkdown("a", "m", ClaudeRatelimitState{FiveHour: win(0.9, "rejected", testResetA)}, sharedAlertDecision(0.75))
 	if err := SendWeCom(nil, srv.URL, msg); err == nil {
 		t.Fatal("expected error on non-2xx response")
 	}

@@ -379,6 +379,64 @@ func TestFileSynthesizer_Synthesize_PriorityParsing(t *testing.T) {
 	}
 }
 
+func TestFileSynthesizer_Synthesize_ClaudeUsageMode(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  any
+		want string
+		ok   bool
+	}{
+		{name: "lowercase shared", raw: "shared", want: "shared", ok: true},
+		{name: "uppercase dedicated", raw: "DEDICATED", want: "dedicated", ok: true},
+		{name: "exclusive alias", raw: "exclusive", want: "exclusive", ok: true},
+		{name: "invalid non-string", raw: 123, want: "", ok: false},
+		{name: "missing", raw: nil, want: "", ok: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			authData := map[string]any{"type": "claude"}
+			if tt.raw != nil {
+				authData["claude_usage_mode"] = tt.raw
+			}
+			data, errWrite := json.Marshal(authData)
+			if errWrite != nil {
+				t.Fatalf("marshal: %v", errWrite)
+			}
+			tempDir := t.TempDir()
+			if errWriteFile := os.WriteFile(filepath.Join(tempDir, "auth.json"), data, 0644); errWriteFile != nil {
+				t.Fatalf("write file: %v", errWriteFile)
+			}
+
+			synth := NewFileSynthesizer()
+			ctx := &SynthesisContext{
+				Config:      &config.Config{},
+				AuthDir:     tempDir,
+				Now:         time.Now(),
+				IDGenerator: NewStableIDGenerator(),
+			}
+			auths, errSynth := synth.Synthesize(ctx)
+			if errSynth != nil {
+				t.Fatalf("Synthesize: %v", errSynth)
+			}
+			if len(auths) != 1 {
+				t.Fatalf("expected 1 auth, got %d", len(auths))
+			}
+
+			value, exists := auths[0].Attributes["claude_usage_mode"]
+			if tt.ok {
+				if !exists || value != tt.want {
+					t.Fatalf("claude_usage_mode = %q, exists=%v; want %q", value, exists, tt.want)
+				}
+				return
+			}
+			if exists {
+				t.Fatalf("expected claude_usage_mode to be absent, got %q", value)
+			}
+		})
+	}
+}
+
 func TestFileSynthesizer_Synthesize_OAuthExcludedModelsMerged(t *testing.T) {
 	tempDir := t.TempDir()
 	authData := map[string]any{

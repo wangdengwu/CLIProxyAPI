@@ -157,6 +157,15 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 			}
 		}
 	}
+	// Read per-account Claude usage mode from the OAuth JSON file. Used by the Claude
+	// unified rate-limit policy to distinguish shared accounts from dedicated ones.
+	if rawMode, ok := metadata["claude_usage_mode"]; ok {
+		if mode, isStr := rawMode.(string); isStr {
+			if trimmed := strings.TrimSpace(mode); trimmed != "" {
+				a.Attributes["claude_usage_mode"] = strings.ToLower(trimmed)
+			}
+		}
+	}
 	coreauth.ApplyCustomHeadersFromMetadata(a)
 	ApplyAuthExcludedModelsMeta(a, cfg, perAccountExcluded, "oauth")
 	// For codex auth files, extract plan_type from the JWT id_token.

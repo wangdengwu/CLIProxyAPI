@@ -11,26 +11,34 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
-const testBlockNotifyThreshold = 0.85
+func blockedDecision(resetUnix int64, reason string) ClaudeRatelimitDecision {
+	return ClaudeRatelimitDecision{
+		Mode:        ClaudeUsageModeShared,
+		Block:       true,
+		BlockUntil:  time.Unix(resetUnix, 0),
+		BlockReason: reason,
+	}
+}
 
-// The core regression: an alert already sent this window (Rule 2/3 would dedup/cooldown a
-// second alert) must NOT swallow the distinct block notice. ShouldNotifyBlock fires once,
-// independently, bypassing the cooldown.
+// The core regression: an alert already sent this window must NOT swallow the distinct
+// block notice. ShouldNotifyBlock fires once, independently, bypassing the cooldown.
 func TestShouldNotifyBlock_FiresAfterAlertWithinCooldown(t *testing.T) {
 	a := NewClaudeRatelimitAlerter()
-	now := time.Now()
+	now := time.Unix(1782880000, 0)
 	st := ClaudeRatelimitState{FiveHour: win(0.90, "allowed_warning", testResetA)}
 
-	// Alert fires first (0.90 >= 0.80).
-	if _, ok := a.ShouldAlert("auth-1", st, testAlertThreshold, testCooldown, now); !ok {
+	decision := sharedAlertDecision(0.80)
+	decision.Block = true
+	decision.BlockUntil = time.Unix(testResetA, 0)
+	decision.BlockReason = ClaudeRatelimitBlockReasonFiveHourThreshold
+
+	if _, ok := a.ShouldAlert("auth-1", st, decision, testCooldown, now); !ok {
 		t.Fatal("alert should fire on first crossing")
 	}
-	// A second alert in the same window is deduped.
-	if _, ok := a.ShouldAlert("auth-1", st, testAlertThreshold, testCooldown, now.Add(time.Second)); ok {
+	if _, ok := a.ShouldAlert("auth-1", st, decision, testCooldown, now.Add(time.Second)); ok {
 		t.Fatal("second alert in same window must be deduped")
 	}
-	// The block notice must STILL fire, despite the alert moments earlier within cooldown.
-	resetAt, ok := a.ShouldNotifyBlock("auth-1", st, testBlockNotifyThreshold)
+	resetAt, ok := a.ShouldNotifyBlock("auth-1", decision)
 	if !ok {
 		t.Fatal("block notice must fire even though an alert was just sent this window")
 	}
@@ -42,59 +50,50 @@ func TestShouldNotifyBlock_FiresAfterAlertWithinCooldown(t *testing.T) {
 // Once per window; re-arms on a new window.
 func TestShouldNotifyBlock_OncePerWindowRearms(t *testing.T) {
 	a := NewClaudeRatelimitAlerter()
-	stA := ClaudeRatelimitState{FiveHour: win(0.90, "allowed_warning", testResetA)}
-	if _, ok := a.ShouldNotifyBlock("auth-1", stA, testBlockNotifyThreshold); !ok {
+	decisionA := blockedDecision(testResetA, ClaudeRatelimitBlockReasonFiveHourThreshold)
+	if _, ok := a.ShouldNotifyBlock("auth-1", decisionA); !ok {
 		t.Fatal("first block notice should fire")
 	}
-	if _, ok := a.ShouldNotifyBlock("auth-1", stA, testBlockNotifyThreshold); ok {
+	if _, ok := a.ShouldNotifyBlock("auth-1", decisionA); ok {
 		t.Fatal("second block notice in same window must be deduped")
 	}
-	stB := ClaudeRatelimitState{FiveHour: win(0.90, "allowed_warning", testResetB)}
-	if _, ok := a.ShouldNotifyBlock("auth-1", stB, testBlockNotifyThreshold); !ok {
+	decisionB := blockedDecision(testResetB, ClaudeRatelimitBlockReasonFiveHourThreshold)
+	if _, ok := a.ShouldNotifyBlock("auth-1", decisionB); !ok {
 		t.Fatal("new window must re-arm the block notice")
 	}
 }
 
-// Below threshold, zero threshold, and missing reset/window must not notify (nil-safe,
-// and never fires for accounts that never reported a 5h limit).
+// Missing block decision, zero block-until, and non-blocking decision must not notify.
 func TestShouldNotifyBlock_GuardsNoNotify(t *testing.T) {
 	a := NewClaudeRatelimitAlerter()
-	// below block threshold
-	if _, ok := a.ShouldNotifyBlock("a", ClaudeRatelimitState{FiveHour: win(0.50, "allowed", testResetA)}, testBlockNotifyThreshold); ok {
-		t.Fatal("below block threshold must not notify")
+	if _, ok := a.ShouldNotifyBlock("a", ClaudeRatelimitDecision{}); ok {
+		t.Fatal("missing block decision must not notify")
 	}
-	// zero threshold disables block notices (matches unset config)
-	if _, ok := a.ShouldNotifyBlock("a", ClaudeRatelimitState{FiveHour: win(0.99, "allowed", testResetA)}, 0); ok {
-		t.Fatal("zero block threshold must disable block notices")
+	if _, ok := a.ShouldNotifyBlock("a", ClaudeRatelimitDecision{Block: true, BlockReason: ClaudeRatelimitBlockReasonFiveHourThreshold}); ok {
+		t.Fatal("zero block-until must not notify")
 	}
-	// no 5h window (e.g. API-key request without unified headers)
-	if _, ok := a.ShouldNotifyBlock("a", ClaudeRatelimitState{}, testBlockNotifyThreshold); ok {
-		t.Fatal("missing 5h window must not notify")
-	}
-	// 5h over threshold but reset unknown -> mirrors ShouldBlock: no notify
-	if _, ok := a.ShouldNotifyBlock("a", ClaudeRatelimitState{FiveHour: &ClaudeRatelimitWindow{UsedRatio: 0.99}}, testBlockNotifyThreshold); ok {
-		t.Fatal("zero reset must not notify")
+	if _, ok := a.ShouldNotifyBlock("a", sharedAlertDecision(0.80)); ok {
+		t.Fatal("non-blocking alert decision must not notify")
 	}
 }
 
-func TestBuildClaudeRatelimitBlockMarkdown_IncludesBlockUntil(t *testing.T) {
+func TestBuildClaudeRatelimitBlockMarkdown_IncludesReasonAndUntil(t *testing.T) {
 	st := ClaudeRatelimitState{FiveHour: win(0.90, "allowed_warning", testResetA)}
-	blockUntil := time.Unix(testResetA, 0)
-	msg := BuildClaudeRatelimitBlockMarkdown("user@example.com", "claude-opus-4-8", st, blockUntil)
+	decision := blockedDecision(testResetA, ClaudeRatelimitBlockReasonFiveHourThreshold)
+	msg := BuildClaudeRatelimitBlockMarkdown("user@example.com", "claude-opus-4-8", st, decision)
 	c := msg.Markdown.Content
-	if !strings.Contains(c, "已阻断") {
-		t.Fatalf("block markdown should mention 阻断; got: %s", c)
-	}
-	if !strings.Contains(c, blockUntil.Format("2006-01-02 15:04:05 MST")) {
-		t.Fatalf("block markdown should include block_until time; got: %s", c)
+	for _, want := range []string{"已阻断", "shared", "动态保护阈值", decision.BlockUntil.Format("2006-01-02 15:04:05 MST")} {
+		if !strings.Contains(c, want) {
+			t.Fatalf("block markdown should contain %q; got: %s", want, c)
+		}
 	}
 	if msg.MsgType != "markdown" {
 		t.Fatalf("msgtype = %s, want markdown", msg.MsgType)
 	}
 }
 
-// End-to-end via the wire: with a block threshold configured, a block notice is
-// dispatched even when the alert for the same window was already sent (deduped).
+// End-to-end via the wire: a block decision dispatches a block notice even when the
+// alert for the same window was already sent.
 func TestMaybeAlert_BlockNoticeDispatchesDespiteDedupedAlert(t *testing.T) {
 	defaultClaudeRatelimitAlerter = NewClaudeRatelimitAlerter() // isolate process-wide debounce state
 	received := make(chan string, 4)
@@ -106,12 +105,14 @@ func TestMaybeAlert_BlockNoticeDispatchesDespiteDedupedAlert(t *testing.T) {
 	defer srv.Close()
 
 	cfg := alertCfg(true, srv.URL)
-	cfg.ClaudeRatelimitAlert.BlockThreshold = 0.85
 	auth := &cliproxyauth.Auth{ID: "auth-block"}
 	st := ClaudeRatelimitState{FiveHour: win(0.90, "allowed_warning", testResetA)}
+	decision := sharedAlertDecision(0.80)
+	decision.Block = true
+	decision.BlockUntil = time.Unix(testResetA, 0)
+	decision.BlockReason = ClaudeRatelimitBlockReasonFiveHourThreshold
 
-	// First call: both an alert (>=0.80) and a block notice (>=0.85) dispatch.
-	MaybeAlertClaudeRatelimit(nil, cfg, auth, "m", st)
+	MaybeAlertClaudeRatelimit(nil, cfg, auth, "m", st, decision)
 
 	var gotAlert, gotBlock bool
 	for i := 0; i < 2; i++ {
@@ -130,11 +131,42 @@ func TestMaybeAlert_BlockNoticeDispatchesDespiteDedupedAlert(t *testing.T) {
 		t.Fatalf("want both alert and block dispatched; alert=%v block=%v", gotAlert, gotBlock)
 	}
 
-	// Second call same window: alert deduped AND block deduped -> no further sends.
-	MaybeAlertClaudeRatelimit(nil, cfg, auth, "m", st)
+	MaybeAlertClaudeRatelimit(nil, cfg, auth, "m", st, decision)
 	select {
 	case body := <-received:
 		t.Fatalf("no send expected on repeat in same window; got: %s", body)
 	case <-time.After(250 * time.Millisecond):
+	}
+}
+
+// Dedicated natural full dispatches a rejected alert but never a proactive block notice.
+func TestMaybeAlert_DedicatedNaturalFullAlertWithoutBlock(t *testing.T) {
+	defaultClaudeRatelimitAlerter = NewClaudeRatelimitAlerter()
+	received := make(chan string, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		received <- string(b)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfg := alertCfg(true, srv.URL)
+	auth := &cliproxyauth.Auth{ID: "auth-dedicated"}
+	st := ClaudeRatelimitState{SevenDay: win(1.0, "rejected", testResetB)}
+	decision := dedicatedNaturalDecision("7d")
+
+	if !MaybeAlertClaudeRatelimit(nil, cfg, auth, "m", st, decision) {
+		t.Fatal("dedicated natural full must dispatch an alert")
+	}
+	select {
+	case body := <-received:
+		if strings.Contains(body, "已阻断") {
+			t.Fatalf("dedicated account must not dispatch a proactive block notice: %s", body)
+		}
+		if !strings.Contains(body, "dedicated") {
+			t.Fatalf("dedicated alert should identify account mode: %s", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected dedicated natural-full alert")
 	}
 }

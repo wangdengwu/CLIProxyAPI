@@ -519,6 +519,26 @@ func (a *Auth) AccountInfo() (string, string) {
 	return "", ""
 }
 
+// ClaudeUsageMode returns the account usage mode declared for this auth. It prefers
+// the synthesizer-populated attribute and falls back to raw auth-file metadata. Empty
+// means unset; callers are responsible for applying their configured default.
+func (a *Auth) ClaudeUsageMode() string {
+	if a == nil {
+		return ""
+	}
+	if a.Attributes != nil {
+		if v := strings.TrimSpace(a.Attributes["claude_usage_mode"]); v != "" {
+			return v
+		}
+	}
+	if a.Metadata != nil {
+		if v, ok := a.Metadata["claude_usage_mode"].(string); ok {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
 // ExpirationTime attempts to extract the credential expiration timestamp from metadata.
 // It inspects common keys such as "expired", "expire", "expires_at", and also
 // nested "token" objects to remain compatible with legacy auth file formats.

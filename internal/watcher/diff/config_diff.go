@@ -97,11 +97,37 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.ClaudeRatelimitAlert.WebhookURL != newCfg.ClaudeRatelimitAlert.WebhookURL {
 		changes = append(changes, "claude-ratelimit-alert.webhook-url: (changed)")
 	}
-	if oldCfg.ClaudeRatelimitAlert.AlertThreshold != newCfg.ClaudeRatelimitAlert.AlertThreshold {
-		changes = append(changes, fmt.Sprintf("claude-ratelimit-alert.alert-threshold: %g -> %g", oldCfg.ClaudeRatelimitAlert.AlertThreshold, newCfg.ClaudeRatelimitAlert.AlertThreshold))
+	if oldCfg.ClaudeRatelimitAlert.DefaultUsageMode != newCfg.ClaudeRatelimitAlert.DefaultUsageMode {
+		changes = append(changes, fmt.Sprintf("claude-ratelimit-alert.default-usage-mode: %s -> %s", oldCfg.ClaudeRatelimitAlert.DefaultUsageMode, newCfg.ClaudeRatelimitAlert.DefaultUsageMode))
 	}
-	if oldCfg.ClaudeRatelimitAlert.BlockThreshold != newCfg.ClaudeRatelimitAlert.BlockThreshold {
-		changes = append(changes, fmt.Sprintf("claude-ratelimit-alert.block-threshold: %g -> %g", oldCfg.ClaudeRatelimitAlert.BlockThreshold, newCfg.ClaudeRatelimitAlert.BlockThreshold))
+	if oldCfg.ClaudeRatelimitAlert.Timezone != newCfg.ClaudeRatelimitAlert.Timezone {
+		changes = append(changes, fmt.Sprintf("claude-ratelimit-alert.timezone: %s -> %s", oldCfg.ClaudeRatelimitAlert.Timezone, newCfg.ClaudeRatelimitAlert.Timezone))
+	}
+	oldShared := oldCfg.ClaudeRatelimitAlert.Shared
+	newShared := newCfg.ClaudeRatelimitAlert.Shared
+	if oldShared.DayBlockThreshold != newShared.DayBlockThreshold {
+		changes = append(changes, fmt.Sprintf("claude-ratelimit-alert.shared.day-block-threshold: %g -> %g", oldShared.DayBlockThreshold, newShared.DayBlockThreshold))
+	}
+	if oldShared.NightBlockThreshold != newShared.NightBlockThreshold {
+		changes = append(changes, fmt.Sprintf("claude-ratelimit-alert.shared.night-block-threshold: %g -> %g", oldShared.NightBlockThreshold, newShared.NightBlockThreshold))
+	}
+	if oldShared.SevenDaySoftStart != newShared.SevenDaySoftStart {
+		changes = append(changes, fmt.Sprintf("claude-ratelimit-alert.shared.seven-day-soft-start: %g -> %g", oldShared.SevenDaySoftStart, newShared.SevenDaySoftStart))
+	}
+	if oldShared.SevenDayHardCap != newShared.SevenDayHardCap {
+		changes = append(changes, fmt.Sprintf("claude-ratelimit-alert.shared.seven-day-hard-cap: %g -> %g", oldShared.SevenDayHardCap, newShared.SevenDayHardCap))
+	}
+	if oldShared.MinBlockThreshold != newShared.MinBlockThreshold {
+		changes = append(changes, fmt.Sprintf("claude-ratelimit-alert.shared.min-block-threshold: %g -> %g", oldShared.MinBlockThreshold, newShared.MinBlockThreshold))
+	}
+	if oldShared.AlertMargin != newShared.AlertMargin {
+		changes = append(changes, fmt.Sprintf("claude-ratelimit-alert.shared.alert-margin: %g -> %g", oldShared.AlertMargin, newShared.AlertMargin))
+	}
+	if oldShared.NightStart != newShared.NightStart {
+		changes = append(changes, fmt.Sprintf("claude-ratelimit-alert.shared.night-start: %s -> %s", oldShared.NightStart, newShared.NightStart))
+	}
+	if oldShared.NightEnd != newShared.NightEnd {
+		changes = append(changes, fmt.Sprintf("claude-ratelimit-alert.shared.night-end: %s -> %s", oldShared.NightEnd, newShared.NightEnd))
 	}
 	if oldCfg.ClaudeRatelimitAlert.Cooldown != newCfg.ClaudeRatelimitAlert.Cooldown {
 		changes = append(changes, fmt.Sprintf("claude-ratelimit-alert.cooldown: %s -> %s", oldCfg.ClaudeRatelimitAlert.Cooldown, newCfg.ClaudeRatelimitAlert.Cooldown))

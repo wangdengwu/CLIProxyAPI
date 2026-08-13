@@ -111,13 +111,22 @@ quota-exceeded:
 
 # Claude unified rate-limit alerting/blocking.
 # Utilization is parsed from Anthropic's unified rate-limit response headers on Claude
-# OAuth (subscription) requests. When a rolling window's used ratio crosses the
-# thresholds, an alert can be pushed and the credential temporarily blocked.
+# OAuth (subscription) requests. Account type comes from each auth file's
+# claude_usage_mode field; missing/invalid values fall back to default-usage-mode.
 claude-ratelimit-alert:
   enabled: true # Master switch; when false nothing is parsed/logged/alerted (default: true)
   webhook-url: "" # Alert destination (e.g. WeCom bot webhook). Empty disables alerting (default: "")
-  alert-threshold: 0.80 # Used-ratio at/above which an alert is raised (default: 0.80)
-  block-threshold: 0.85 # Used-ratio at/above which the credential is blocked (default: 0.85)
+  default-usage-mode: "shared" # shared | dedicated (exclusive is accepted as a dedicated alias)
+  timezone: "Asia/Shanghai" # Timezone used for the shared night window
+  shared:
+    day-block-threshold: 0.80 # Shared 5h limit during owner-active daytime
+    night-block-threshold: 0.98 # Shared 5h limit during owner-idle night window
+    seven-day-soft-start: 0.70 # 7d usage above which the 5h budget starts shrinking
+    seven-day-hard-cap: 0.98 # 7d usage at/above which shared accounts are hard-blocked
+    min-block-threshold: 0.03 # Floor for the dynamic 5h threshold
+    alert-margin: 0.05 # Alert threshold = dynamic block threshold - this value
+    night-start: "22:00" # HH:MM
+    night-end: "08:00" # HH:MM
   cooldown: "5m" # Debounce window for repeated alerts per rolling window (default: "5m")
 
 # Routing strategy for selecting credentials when multiple match.

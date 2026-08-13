@@ -222,10 +222,10 @@ type QuotaExceeded struct {
 }
 
 // ClaudeRatelimitAlert configures the Claude unified rate-limit alert/block feature.
-// Utilization is parsed from Anthropic's unified rate-limit response headers; when a
-// rolling window's used ratio crosses AlertThreshold an alert may be pushed to
-// WebhookURL, and when it crosses BlockThreshold the credential may be temporarily
-// blocked. Cooldown debounces repeated alerts for the same window.
+// Utilization is parsed from Anthropic's unified rate-limit response headers. Shared
+// accounts are proactively protected with a time-of-day and 7-day-aware dynamic
+// threshold; dedicated accounts are never proactively blocked, but still alert when
+// the upstream 5h/7d window is naturally exhausted.
 type ClaudeRatelimitAlert struct {
 	// Enabled toggles the whole feature. When false, no parsing/logging/alerting occurs.
 	Enabled bool `yaml:"enabled" json:"enabled"`
@@ -233,14 +233,44 @@ type ClaudeRatelimitAlert struct {
 	// WebhookURL is the alert destination (e.g. a WeCom bot webhook). Empty disables alerting.
 	WebhookURL string `yaml:"webhook-url" json:"webhook-url"`
 
-	// AlertThreshold is the used-ratio (0..1+) at or above which an alert is raised.
-	AlertThreshold float64 `yaml:"alert-threshold" json:"alert-threshold"`
+	// DefaultUsageMode is applied when an auth does not set claude_usage_mode.
+	// Supported values: "shared" (default), "dedicated", and "exclusive" as a dedicated alias.
+	DefaultUsageMode string `yaml:"default-usage-mode" json:"default-usage-mode"`
 
-	// BlockThreshold is the used-ratio (0..1+) at or above which the credential is blocked.
-	BlockThreshold float64 `yaml:"block-threshold" json:"block-threshold"`
+	// Timezone is the location used to evaluate the shared night window.
+	// Defaults to Asia/Shanghai when empty or invalid.
+	Timezone string `yaml:"timezone" json:"timezone"`
+
+	// Shared configures the protective dynamic policy for shared accounts.
+	Shared ClaudeSharedRatelimitPolicy `yaml:"shared" json:"shared"`
 
 	// Cooldown is a duration string (e.g. "5m") that debounces repeated alerts per window.
 	Cooldown string `yaml:"cooldown" json:"cooldown"`
+}
+
+// ClaudeSharedRatelimitPolicy configures the dynamic protective policy for shared accounts.
+type ClaudeSharedRatelimitPolicy struct {
+	// DayBlockThreshold is the maximum 5h utilization during the owner-active day window.
+	DayBlockThreshold float64 `yaml:"day-block-threshold" json:"day-block-threshold"`
+
+	// NightBlockThreshold is the maximum 5h utilization during the owner-idle night window.
+	NightBlockThreshold float64 `yaml:"night-block-threshold" json:"night-block-threshold"`
+
+	// SevenDaySoftStart is the 7d utilization above which the 5h budget starts shrinking.
+	SevenDaySoftStart float64 `yaml:"seven-day-soft-start" json:"seven-day-soft-start"`
+
+	// SevenDayHardCap is the 7d utilization at or above which the shared account is hard-blocked.
+	SevenDayHardCap float64 `yaml:"seven-day-hard-cap" json:"seven-day-hard-cap"`
+
+	// MinBlockThreshold is the floor applied to the dynamic 5h block threshold.
+	MinBlockThreshold float64 `yaml:"min-block-threshold" json:"min-block-threshold"`
+
+	// AlertMargin is subtracted from the dynamic block threshold to produce the alert threshold.
+	AlertMargin float64 `yaml:"alert-margin" json:"alert-margin"`
+
+	// NightStart and NightEnd define the owner-idle window in HH:MM format.
+	NightStart string `yaml:"night-start" json:"night-start"`
+	NightEnd   string `yaml:"night-end" json:"night-end"`
 }
 
 // RoutingConfig configures how credentials are selected for requests.
@@ -648,8 +678,16 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.AmpCode.RestrictManagementToLocalhost = false // Default to false: API key auth is sufficient
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	cfg.ClaudeRatelimitAlert.Enabled = true
-	cfg.ClaudeRatelimitAlert.AlertThreshold = 0.80
-	cfg.ClaudeRatelimitAlert.BlockThreshold = 0.85
+	cfg.ClaudeRatelimitAlert.DefaultUsageMode = "shared"
+	cfg.ClaudeRatelimitAlert.Timezone = "Asia/Shanghai"
+	cfg.ClaudeRatelimitAlert.Shared.DayBlockThreshold = 0.80
+	cfg.ClaudeRatelimitAlert.Shared.NightBlockThreshold = 0.98
+	cfg.ClaudeRatelimitAlert.Shared.SevenDaySoftStart = 0.70
+	cfg.ClaudeRatelimitAlert.Shared.SevenDayHardCap = 0.98
+	cfg.ClaudeRatelimitAlert.Shared.MinBlockThreshold = 0.03
+	cfg.ClaudeRatelimitAlert.Shared.AlertMargin = 0.05
+	cfg.ClaudeRatelimitAlert.Shared.NightStart = "22:00"
+	cfg.ClaudeRatelimitAlert.Shared.NightEnd = "08:00"
 	cfg.ClaudeRatelimitAlert.Cooldown = "5m"
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {

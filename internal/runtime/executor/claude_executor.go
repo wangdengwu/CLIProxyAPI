@@ -235,10 +235,12 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	if e.cfg != nil && e.cfg.ClaudeRatelimitAlert.Enabled {
 		rlState := helps.ParseClaudeRatelimit(httpResp.Header)
 		helps.LogClaudeRatelimitState(ctx, auth, rlState)
-		helps.MaybeAlertClaudeRatelimit(ctx, e.cfg, auth, req.Model, rlState)
+		policy := helps.ResolveClaudeRatelimitPolicy(e.cfg, auth)
+		decision := helps.EvaluateClaudeRatelimitPolicy(rlState, policy, time.Now())
+		helps.MaybeAlertClaudeRatelimit(ctx, e.cfg, auth, req.Model, rlState, decision)
 		if auth != nil {
-			if resetAt, ok := helps.ShouldBlockClaudeRatelimit(rlState, e.cfg.ClaudeRatelimitAlert.BlockThreshold); ok {
-				cliproxyauth.ApplyRatelimitBlock(auth.ID, resetAt)
+			if decision.Block {
+				cliproxyauth.ApplyRatelimitBlock(auth.ID, decision.BlockUntil)
 			}
 		}
 	}
@@ -419,10 +421,12 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	if e.cfg != nil && e.cfg.ClaudeRatelimitAlert.Enabled {
 		rlState := helps.ParseClaudeRatelimit(httpResp.Header)
 		helps.LogClaudeRatelimitState(ctx, auth, rlState)
-		helps.MaybeAlertClaudeRatelimit(ctx, e.cfg, auth, req.Model, rlState)
+		policy := helps.ResolveClaudeRatelimitPolicy(e.cfg, auth)
+		decision := helps.EvaluateClaudeRatelimitPolicy(rlState, policy, time.Now())
+		helps.MaybeAlertClaudeRatelimit(ctx, e.cfg, auth, req.Model, rlState, decision)
 		if auth != nil {
-			if resetAt, ok := helps.ShouldBlockClaudeRatelimit(rlState, e.cfg.ClaudeRatelimitAlert.BlockThreshold); ok {
-				cliproxyauth.ApplyRatelimitBlock(auth.ID, resetAt)
+			if decision.Block {
+				cliproxyauth.ApplyRatelimitBlock(auth.ID, decision.BlockUntil)
 			}
 		}
 	}

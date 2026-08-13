@@ -27,7 +27,7 @@ const defaultClaudeRatelimitCooldown = 5 * time.Minute
 //
 // Returns true iff an alert was dispatched (an async send was launched). The return
 // value exists for testing the gating decision deterministically.
-func MaybeAlertClaudeRatelimit(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, model string, state ClaudeRatelimitState) bool {
+func MaybeAlertClaudeRatelimit(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, model string, state ClaudeRatelimitState, decision ClaudeRatelimitDecision) bool {
 	if cfg == nil || !cfg.ClaudeRatelimitAlert.Enabled || auth == nil {
 		return false
 	}
@@ -44,16 +44,16 @@ func MaybeAlertClaudeRatelimit(ctx context.Context, cfg *config.Config, auth *cl
 	// the exact selector-block condition, deduped once per window, and bypasses the alert
 	// cooldown. This is deliberate — an alert sent moments earlier (same window, within
 	// cooldown) must not swallow the "account blocked" notice.
-	if blockUntil, ok := defaultClaudeRatelimitAlerter.ShouldNotifyBlock(authID, state, cfg.ClaudeRatelimitAlert.BlockThreshold); ok {
-		sendClaudeRatelimitWeComAsync(webhook, BuildClaudeRatelimitBlockMarkdown(account, model, state, blockUntil), reqID, authID, ClaudeRatelimitLevelBlocked)
+	if _, ok := defaultClaudeRatelimitAlerter.ShouldNotifyBlock(authID, decision); ok {
+		sendClaudeRatelimitWeComAsync(webhook, BuildClaudeRatelimitBlockMarkdown(account, model, state, decision), reqID, authID, ClaudeRatelimitLevelBlocked)
 	}
 
 	cooldown := parseClaudeRatelimitCooldown(cfg.ClaudeRatelimitAlert.Cooldown)
-	level, ok := defaultClaudeRatelimitAlerter.ShouldAlert(authID, state, cfg.ClaudeRatelimitAlert.AlertThreshold, cooldown, time.Now())
+	level, ok := defaultClaudeRatelimitAlerter.ShouldAlert(authID, state, decision, cooldown, time.Now())
 	if !ok {
 		return false
 	}
-	sendClaudeRatelimitWeComAsync(webhook, BuildClaudeRatelimitMarkdown(account, model, state), reqID, authID, level)
+	sendClaudeRatelimitWeComAsync(webhook, BuildClaudeRatelimitMarkdown(account, model, state, decision), reqID, authID, level)
 	return true
 }
 
