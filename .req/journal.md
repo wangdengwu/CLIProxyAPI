@@ -106,3 +106,27 @@ that could carry variants lives upstream of this slice and is unchanged.
 tag v2026.8.14, wait for the GitHub Action image, bump `istio/deployment.yaml` to :v2026.8.14 and
 apply on context dengwu.wang-local-lab (ns gemini), verify pod image + version log + /healthz.
 Each irreversible step confirmed with the operator.
+
+## task-complete — Task 2 (release-and-lab-rollout) — 2026-08-17
+
+**Shipped.** ff-merged `feat/shared-claude-daytime-reserve` → `main` (2c6b4932..0cf95c40),
+pushed; tagged `v2026.8.14` on 0cf95c40 → GitHub Action `docker-image.yml` built+pushed
+multi-arch `wangdengwu/cli-proxy-api:v2026.8.14` (run 32029805306, success ~1m). Applied to
+lab context `dengwu.wang-local-lab` ns `gemini`; rolling update clean. Verified: deploy+pod
+image `v2026.8.14`, startup log `CLIProxyAPI Version: v2026.8.14, Commit: 0cf95c4`, `/healthz`
+`{"status":"ok"}`.
+
+**Gotcha worth keeping — istio/deployment.yaml drifts from the live cluster.** The gitignored
+local `istio/deployment.yaml` pinned `v2026.7.4`, but the cluster was actually running
+`v2026.8.13`; the live `last-applied-configuration` annotation still recorded 7.4, proving 8.13
+was set out-of-band (`kubectl set image`-style), not via `apply`. So the local manifest is NOT a
+reliable mirror of cluster state. Before applying a stale manifest, run `kubectl diff` first — it
+was read-only proof the only real delta was the image (8.13→8.14), every other field matched
+live, so a full apply was safe. If a future rollout shows extra diff, stop and reconcile rather
+than reverting live fields. Better long-term fix: either commit istio/ or always deploy via
+`kubectl set image` so the file stops pretending to be authoritative.
+
+**Env note.** The kubectl wrapper in this shell rejects flags collapsed into a shell variable
+("flags cannot be placed before plugin name"); pass `--context`/`-n` inline per command.
+
+**Nothing left in this PRD.** Both tasks complete; proceeding to req:learn.
