@@ -184,6 +184,10 @@ func (s *ObjectTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (s
 
 	switch {
 	case auth.Storage != nil:
+		// Only logins and credential imports reach this branch, and the save below
+		// truncates the file. Without this the operator's own keys — usage mode,
+		// priority, note, headers — would be erased on every re-bind.
+		misc.ApplyPreservedMetadata(path, auth.Storage, auth.Metadata)
 		if err = auth.Storage.SaveTokenToFile(path); err != nil {
 			return "", err
 		}

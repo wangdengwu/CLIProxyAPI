@@ -18,6 +18,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/go-git/go-git/v6/plumbing/transport"
 	"github.com/go-git/go-git/v6/plumbing/transport/http"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
@@ -287,6 +288,10 @@ func (s *GitTokenStore) Save(_ context.Context, auth *cliproxyauth.Auth) (string
 
 	switch {
 	case auth.Storage != nil:
+		// Only logins and credential imports reach this branch, and the save below
+		// truncates the file. Without this the operator's own keys — usage mode,
+		// priority, note, headers — would be erased on every re-bind.
+		misc.ApplyPreservedMetadata(path, auth.Storage, auth.Metadata)
 		if err = auth.Storage.SaveTokenToFile(path); err != nil {
 			return "", err
 		}
