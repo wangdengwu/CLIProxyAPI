@@ -69,3 +69,40 @@ the four `Save` methods and the task-1 test file, nothing else.
 already has temp-repo infrastructure, so covering `GitTokenStore.Save` is cheap and would close
 most of the accepted risk — the brief names this as a reasonable follow-up but explicitly out of
 scope here.
+
+## task-complete — Task 1 (retune-shared-policy-defaults) — 2026-08-17
+
+**Built.** Shared Claude 5h policy defaults retuned: `day-block-threshold` 0.80→0.50,
+night window 22:00–08:00 → 19:00–05:00; `night-block-threshold` 0.98 unchanged. Changed in
+BOTH in-code default sources — `config.go SetDefaults` and `ratelimit_policy.go`
+`defaultClaudeSharedRatelimitPolicy` — plus `config.example.yaml`, so a fresh install and a
+nil-config-resolved policy agree (the two sources would otherwise drift; the block-path tests
+resolve via the policy-layer default, the config tests via SetDefaults, so each source has its
+own seam). Defaults-only: no new fields, no evaluation-logic change. Commit `a3449b2d` on
+`feat/shared-claude-daytime-reserve`.
+
+**Verification.** Inline TDD (controller both roles — subagents disallowed this session), two
+honest red→green cycles: (A) config-defaults test → red on 0.80/22:00/08:00 → green after
+SetDefaults edit; (B) policy block test (4 existing assertions retargeted to the 0.50 day base +
+2 new behaviors: `TestEvaluateSharedNightWindowBoundaries` asserting IsNight flips true@19:30/
+04:30, false@05:30/18:30, and `TestEvaluateSharedMorningDayCapReengages` asserting a 0.90 window
+blocks at 05:30 under the reinstated 0.50 cap) → red (5 fails) → green after the policy-default
+edit. `go build ./...` OK; touched packages green; full `go test ./...` clean except the
+pre-existing `internal/registry` `TestCodexFreeModelsExcludeGPT55` (untouched here, documented
+failing on a clean tree in the previous PRD's journal).
+
+**Gotcha worth keeping.** The 7-day guard test (`TestEvaluateSharedSevenDayGuard`) hardcodes the
+day base inside its expected-value formula: `want := 0.50 * ((0.98-0.80)/(0.98-0.70))`. The 0.80
+there is the 7d *used* input (matches `win(0.80)`), NOT the day threshold — only the leading
+multiplier (0.50) is the day base. A naive grep-and-replace of "0.80" would have corrupted the
+guard math. Changing a policy base means re-deriving this test's arithmetic by hand, not swapping
+a literal.
+
+**Coverage adversary.** Skipped by design — this slice parses no real-world data (no rate-limit
+header distribution to be wrong about); it only sets threshold/time constants. The header parsing
+that could carry variants lives upstream of this slice and is unchanged.
+
+**Left for Task 2.** Release + lab rollout (ready-for-human): ff-merge this branch to main, push,
+tag v2026.8.14, wait for the GitHub Action image, bump `istio/deployment.yaml` to :v2026.8.14 and
+apply on context dengwu.wang-local-lab (ns gemini), verify pod image + version log + /healthz.
+Each irreversible step confirmed with the operator.

@@ -1,14 +1,13 @@
-# Progress ledger — 2026-08-17-preserve-auth-metadata-on-rebind
+# Progress ledger — 2026-08-17-shared-claude-daytime-reserve
 
-Branch: `feat/preserve-auth-metadata-on-rebind` (single branch for the whole PRD).
+Branch: `feat/shared-claude-daytime-reserve` (single branch for the whole PRD).
 
-Previous PRD `2026-07-01-claude-ratelimit-alert-block` shipped and merged into `main`;
-its per-task record lives in that PRD's own as-built section (tasks 1–4, PRs #3/#4/#6).
-The ledger is reset per PRD because `load_states()` keys on task id alone — stale lines
-from a shipped PRD would make this PRD's Task 1 parse as already done.
+Previous PRD `2026-08-17-preserve-auth-metadata-on-rebind` shipped; the ledger is reset
+per PRD because `load_states()` keys on task id alone — stale lines from a shipped PRD
+would make this PRD's Task 1 parse as already done.
+
+Running inline (no worktree): single code task, subagents disallowed this session — stated in dev.
 
 <!-- ledger lines below, one per task, in the parseable format -->
 
-- Task 1: complete (commit dc8647e9, review clean; earlier Go-toolchain BLOCKED resolved — go1.26.6 present, full red→green evidence captured)
-- Task 2: complete (commit 2d1fd0b9, review clean; wiring-only, no tests by design — accepted risk in the PRD)
-
+- Task 1: complete (commit a3449b2d, review clean; inline TDD, two red→green cycles captured; coverage adversary N/A — no real-world data parsing)
