@@ -22,35 +22,79 @@ func sharedNow(t *testing.T, hour int) time.Time {
 	return time.Date(2026, 8, 13, hour, 30, 0, 0, loc)
 }
 
-// Shared, abundant 7d, daytime: 5h threshold is exactly 0.80.
+// Shared, abundant 7d, daytime: 5h threshold is exactly 0.50.
 func TestEvaluateSharedDayAbundant(t *testing.T) {
 	policy := sharedPolicyForMode("shared", nil)
 	state := ClaudeRatelimitState{
-		FiveHour: win(0.80, "allowed_warning", testResetA),
+		FiveHour: win(0.50, "allowed_warning", testResetA),
 		SevenDay: win(0.12, "allowed", testResetB),
 	}
 	decision := EvaluateClaudeRatelimitPolicy(state, policy, sharedNow(t, 12))
 	if decision.IsNight {
 		t.Fatal("expected daytime for a 12:30 Asia/Shanghai timestamp, got night")
 	}
-	if decision.FiveHourThreshold != 0.80 {
-		t.Fatalf("FiveHourThreshold = %v, want 0.80", decision.FiveHourThreshold)
+	if decision.FiveHourThreshold != 0.50 {
+		t.Fatalf("FiveHourThreshold = %v, want 0.50", decision.FiveHourThreshold)
 	}
 	if !decision.Block || decision.BlockReason != ClaudeRatelimitBlockReasonFiveHourThreshold {
 		t.Fatalf("expected 5h dynamic block, got block=%v reason=%s", decision.Block, decision.BlockReason)
 	}
 }
 
-// Shared, abundant 7d, daytime: below 0.80 must not block.
+// Shared, abundant 7d, daytime: below 0.50 must not block.
 func TestEvaluateSharedDayBelowThreshold(t *testing.T) {
 	policy := sharedPolicyForMode("shared", nil)
 	state := ClaudeRatelimitState{
-		FiveHour: win(0.79, "allowed_warning", testResetA),
+		FiveHour: win(0.49, "allowed_warning", testResetA),
 		SevenDay: win(0.12, "allowed", testResetB),
 	}
 	decision := EvaluateClaudeRatelimitPolicy(state, policy, sharedNow(t, 12))
 	if decision.Block {
-		t.Fatalf("must not block below 0.80, decision=%+v", decision)
+		t.Fatalf("must not block below 0.50, decision=%+v", decision)
+	}
+}
+
+// Night window is 19:00–05:00: IsNight flips at the new edges.
+func TestEvaluateSharedNightWindowBoundaries(t *testing.T) {
+	policy := sharedPolicyForMode("shared", nil)
+	cases := []struct {
+		hour int
+		want bool
+	}{
+		{19, true},  // 19:30 — owner has left, night begins
+		{4, true},   // 04:30 — still night
+		{5, false},  // 05:30 — day cap re-engages
+		{18, false}, // 18:30 — still day
+	}
+	for _, c := range cases {
+		state := ClaudeRatelimitState{
+			FiveHour: win(0.10, "allowed", testResetA),
+			SevenDay: win(0.12, "allowed", testResetB),
+		}
+		decision := EvaluateClaudeRatelimitPolicy(state, policy, sharedNow(t, c.hour))
+		if decision.IsNight != c.want {
+			t.Fatalf("hour %d: IsNight = %v, want %v", c.hour, decision.IsNight, c.want)
+		}
+	}
+}
+
+// Morning boundary: after 05:00 the 0.50 day cap re-engages, so a window drained
+// high overnight is blocked (used >= 0.50) until its reset.
+func TestEvaluateSharedMorningDayCapReengages(t *testing.T) {
+	policy := sharedPolicyForMode("shared", nil)
+	state := ClaudeRatelimitState{
+		FiveHour: win(0.90, "allowed_warning", testResetA),
+		SevenDay: win(0.12, "allowed", testResetB),
+	}
+	decision := EvaluateClaudeRatelimitPolicy(state, policy, sharedNow(t, 5))
+	if decision.IsNight {
+		t.Fatal("05:30 must be daytime under the 19:00–05:00 night window")
+	}
+	if decision.FiveHourThreshold != 0.50 {
+		t.Fatalf("FiveHourThreshold = %v, want 0.50 (day cap)", decision.FiveHourThreshold)
+	}
+	if !decision.Block || decision.BlockReason != ClaudeRatelimitBlockReasonFiveHourThreshold {
+		t.Fatalf("expected 5h dynamic block at 0.90 in the morning, got block=%v reason=%s", decision.Block, decision.BlockReason)
 	}
 }
 
@@ -73,7 +117,7 @@ func TestEvaluateSharedNightAbundant(t *testing.T) {
 	}
 }
 
-// Shared with 7d partially consumed: the dynamic 5h threshold shrinks below 0.80.
+// Shared with 7d partially consumed: the dynamic 5h threshold shrinks below 0.50.
 func TestEvaluateSharedSevenDayGuard(t *testing.T) {
 	policy := sharedPolicyForMode("shared", nil)
 	state := ClaudeRatelimitState{
@@ -81,7 +125,7 @@ func TestEvaluateSharedSevenDayGuard(t *testing.T) {
 		SevenDay: win(0.80, "allowed", testResetB),
 	}
 	decision := EvaluateClaudeRatelimitPolicy(state, policy, sharedNow(t, 12))
-	want := 0.80 * ((0.98 - 0.80) / (0.98 - 0.70)) // 0.514285...
+	want := 0.50 * ((0.98 - 0.80) / (0.98 - 0.70)) // 0.321428...
 	if diff := decision.FiveHourThreshold - want; diff < -0.001 || diff > 0.001 {
 		t.Fatalf("FiveHourThreshold = %v, want ~%v", decision.FiveHourThreshold, want)
 	}
@@ -115,8 +159,8 @@ func TestEvaluateSharedMissingSevenDayNoNightBoost(t *testing.T) {
 	if decision.IsNight {
 		t.Fatal("missing 7d data must disable the night boost")
 	}
-	if decision.FiveHourThreshold != 0.80 {
-		t.Fatalf("FiveHourThreshold = %v, want 0.80", decision.FiveHourThreshold)
+	if decision.FiveHourThreshold != 0.50 {
+		t.Fatalf("FiveHourThreshold = %v, want 0.50", decision.FiveHourThreshold)
 	}
 	if !decision.Block {
 		t.Fatal("expected block at 0.81 during the conservative daytime policy")

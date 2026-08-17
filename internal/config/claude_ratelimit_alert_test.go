@@ -37,8 +37,8 @@ func TestClaudeRatelimitAlertDefaultsWhenAbsent(t *testing.T) {
 		t.Errorf("Timezone = %q, want Asia/Shanghai (default)", rl.Timezone)
 	}
 	shared := rl.Shared
-	if shared.DayBlockThreshold != 0.80 {
-		t.Errorf("Shared.DayBlockThreshold = %v, want 0.80 (default)", shared.DayBlockThreshold)
+	if shared.DayBlockThreshold != 0.50 {
+		t.Errorf("Shared.DayBlockThreshold = %v, want 0.50 (default)", shared.DayBlockThreshold)
 	}
 	if shared.NightBlockThreshold != 0.98 {
 		t.Errorf("Shared.NightBlockThreshold = %v, want 0.98 (default)", shared.NightBlockThreshold)
@@ -55,8 +55,8 @@ func TestClaudeRatelimitAlertDefaultsWhenAbsent(t *testing.T) {
 	if shared.AlertMargin != 0.05 {
 		t.Errorf("Shared.AlertMargin = %v, want 0.05 (default)", shared.AlertMargin)
 	}
-	if shared.NightStart != "22:00" || shared.NightEnd != "08:00" {
-		t.Errorf("Shared night window = %q-%q, want 22:00-08:00", shared.NightStart, shared.NightEnd)
+	if shared.NightStart != "19:00" || shared.NightEnd != "05:00" {
+		t.Errorf("Shared night window = %q-%q, want 19:00-05:00", shared.NightStart, shared.NightEnd)
 	}
 	if rl.Cooldown != "5m" {
 		t.Errorf("Cooldown = %q, want 5m (default)", rl.Cooldown)
@@ -147,14 +147,14 @@ claude-ratelimit-alert:
 		t.Errorf("Timezone = %q, want Asia/Shanghai (default retained)", rl.Timezone)
 	}
 	shared := rl.Shared
-	if shared.DayBlockThreshold != 0.80 {
-		t.Errorf("Shared.DayBlockThreshold = %v, want 0.80 (default retained)", shared.DayBlockThreshold)
+	if shared.DayBlockThreshold != 0.50 {
+		t.Errorf("Shared.DayBlockThreshold = %v, want 0.50 (default retained)", shared.DayBlockThreshold)
 	}
 	if shared.NightBlockThreshold != 0.98 {
 		t.Errorf("Shared.NightBlockThreshold = %v, want 0.98 (default retained)", shared.NightBlockThreshold)
 	}
-	if shared.NightStart != "22:00" || shared.NightEnd != "08:00" {
-		t.Errorf("Shared night window = %q-%q, want 22:00-08:00 (default retained)", shared.NightStart, shared.NightEnd)
+	if shared.NightStart != "19:00" || shared.NightEnd != "05:00" {
+		t.Errorf("Shared night window = %q-%q, want 19:00-05:00 (default retained)", shared.NightStart, shared.NightEnd)
 	}
 	if rl.Cooldown != "5m" {
 		t.Errorf("Cooldown = %q, want 5m (default retained)", rl.Cooldown)

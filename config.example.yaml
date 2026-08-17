@@ -119,14 +119,14 @@ claude-ratelimit-alert:
   default-usage-mode: "shared" # shared | dedicated (exclusive is accepted as a dedicated alias)
   timezone: "Asia/Shanghai" # Timezone used for the shared night window
   shared:
-    day-block-threshold: 0.80 # Shared 5h limit during owner-active daytime
+    day-block-threshold: 0.50 # Shared 5h limit during owner-active daytime (reserve 50% for the owner)
     night-block-threshold: 0.98 # Shared 5h limit during owner-idle night window
     seven-day-soft-start: 0.70 # 7d usage above which the 5h budget starts shrinking
     seven-day-hard-cap: 0.98 # 7d usage at/above which shared accounts are hard-blocked
     min-block-threshold: 0.03 # Floor for the dynamic 5h threshold
     alert-margin: 0.05 # Alert threshold = dynamic block threshold - this value
-    night-start: "22:00" # HH:MM
-    night-end: "08:00" # HH:MM
+    night-start: "19:00" # HH:MM — owner goes idle after work
+    night-end: "05:00" # HH:MM — ends early so the day cap re-engages before the owner returns
   cooldown: "5m" # Debounce window for repeated alerts per rolling window (default: "5m")
 
 # Routing strategy for selecting credentials when multiple match.

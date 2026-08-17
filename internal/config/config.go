@@ -680,14 +680,14 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.ClaudeRatelimitAlert.Enabled = true
 	cfg.ClaudeRatelimitAlert.DefaultUsageMode = "shared"
 	cfg.ClaudeRatelimitAlert.Timezone = "Asia/Shanghai"
-	cfg.ClaudeRatelimitAlert.Shared.DayBlockThreshold = 0.80
+	cfg.ClaudeRatelimitAlert.Shared.DayBlockThreshold = 0.50
 	cfg.ClaudeRatelimitAlert.Shared.NightBlockThreshold = 0.98
 	cfg.ClaudeRatelimitAlert.Shared.SevenDaySoftStart = 0.70
 	cfg.ClaudeRatelimitAlert.Shared.SevenDayHardCap = 0.98
 	cfg.ClaudeRatelimitAlert.Shared.MinBlockThreshold = 0.03
 	cfg.ClaudeRatelimitAlert.Shared.AlertMargin = 0.05
-	cfg.ClaudeRatelimitAlert.Shared.NightStart = "22:00"
-	cfg.ClaudeRatelimitAlert.Shared.NightEnd = "08:00"
+	cfg.ClaudeRatelimitAlert.Shared.NightStart = "19:00"
+	cfg.ClaudeRatelimitAlert.Shared.NightEnd = "05:00"
 	cfg.ClaudeRatelimitAlert.Cooldown = "5m"
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {

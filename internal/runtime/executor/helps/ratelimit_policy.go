@@ -145,14 +145,14 @@ func normalizeClaudeUsageMode(raw string) ClaudeUsageMode {
 
 func defaultClaudeSharedRatelimitPolicy() config.ClaudeSharedRatelimitPolicy {
 	return config.ClaudeSharedRatelimitPolicy{
-		DayBlockThreshold:   0.80,
+		DayBlockThreshold:   0.50,
 		NightBlockThreshold: 0.98,
 		SevenDaySoftStart:   0.70,
 		SevenDayHardCap:     0.98,
 		MinBlockThreshold:   0.03,
 		AlertMargin:         0.05,
-		NightStart:          "22:00",
-		NightEnd:            "08:00",
+		NightStart:          "19:00",
+		NightEnd:            "05:00",
 	}
 }
 
