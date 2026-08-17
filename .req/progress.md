@@ -10,4 +10,5 @@ from a shipped PRD would make this PRD's Task 1 parse as already done.
 <!-- ledger lines below, one per task, in the parseable format -->
 
 - Task 1: complete (commit dc8647e9, review clean; earlier Go-toolchain BLOCKED resolved — go1.26.6 present, full red→green evidence captured)
+- Task 2: complete (commit 2d1fd0b9, review clean; wiring-only, no tests by design — accepted risk in the PRD)
 
