@@ -28,6 +28,11 @@ auths/*
 # Documentation
 docs/*
 !docs/prds/
+# The persistent knowledge layer req:learn writes to. It only pays off if it
+# ships with the repo — the whole point is that the next session, and the next
+# person, start from it.
+!docs/adr/
+!docs/learnings.md
 AGENTS.md
 CLAUDE.md
 GEMINI.md
