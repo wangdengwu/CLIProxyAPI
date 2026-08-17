@@ -1,8 +1,10 @@
-# Progress ledger — 2026-07-01-claude-ratelimit-alert-block
+# Progress ledger — 2026-08-17-preserve-auth-metadata-on-rebind
 
-Branch: `feat/claude-ratelimit-alert-block` (single branch for the whole PRD).
+Branch: `feat/preserve-auth-metadata-on-rebind` (single branch for the whole PRD).
 
-- Task 1: complete (spike; CONFIRMED CONTRACT recorded in `tasks/.../1-confirm-header-fields.md`; no code)
-- Task 2: complete (commits ff2eecb7..8c96421d, review clean, coverage adversary in-scope findings addressed [I-2 fix + C-1/C-2/I-3 tests]; C-3/C-4/I-1/I-5 deferred to tasks 3/4 by scope)
-- Task 3: complete (branch feat/claude-ratelimit-alert-wecom, commit 6de44240 off main b4545970, review clean, coverage adversary N/A — operates on own RatelimitState type, not real-world data)
-- Task 4: complete (branch feat/claude-ratelimit-block-switch stacked on task 3, commit 2089f3db; selector.go gains account-level Unavailable pre-check [confirmed with user]; review clean, coverage adversary N/A)
+Previous PRD `2026-07-01-claude-ratelimit-alert-block` shipped and merged into `main`;
+its per-task record lives in that PRD's own as-built section (tasks 1–4, PRs #3/#4/#6).
+The ledger is reset per PRD because `load_states()` keys on task id alone — stale lines
+from a shipped PRD would make this PRD's Task 1 parse as already done.
+
+<!-- ledger lines below, one per task, in the parseable format -->
