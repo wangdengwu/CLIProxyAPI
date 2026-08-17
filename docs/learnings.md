@@ -38,3 +38,20 @@ Postgres 后端（生产与 lab 实际运行的那个）并不是「只写数据
 
 这一点是任何「读取旧 auth 文件」的功能能在生产生效的前提。对象存储与 Git 后端是同一形状。如果哪天本地 spool 策略变了，所有依赖这个前提的功能都要重新评估。
 
+## claude-shared-ratelimit-defaults-live-in-two-sources
+
+Claude「shared」限流策略的默认值有**两处代码来源**,改一处必须同步另一处,否则全新安装与从空/nil config 解析出的策略会不一致:
+
+- `internal/config/config.go` 的 `SetDefaults` —— 配置层默认(config 层单测走这条)。
+- `internal/runtime/executor/helps/ratelimit_policy.go` 的 `defaultClaudeSharedRatelimitPolicy` —— 策略层回退,policy 从空/nil config 解析时用它(block 路径单测 `sharedPolicyForMode("shared", nil)` 走这条)。
+
+外加 `config.example.yaml` 的 `claude-ratelimit-alert.shared` 段是文档来源,也要对齐。生产 configmap 通常不写这些键(靠默认值),所以改代码默认即在生产生效。
+
+配套陷阱:7 天 guard 的单测把 day base 硬编进了期望值公式(形如 `base * ((hardCap-used)/(hardCap-soft))`)。改 base 要手工重算该期望值,不能对字面量做全局替换 —— 公式里还有个数值相同的量是 7d used 输入,替换会算错。
+
+## istio-manifest-drifts-from-live-cluster
+
+`istio/` 是 gitignored 的本地基础设施文件(deployment/service/virtualservice 等),不在仓库里,且**会与线上集群漂移**:线上镜像常被带外升级(`kubectl set image` 之类),本地 `istio/deployment.yaml` 不会同步 —— 出现过文件停在旧 tag、集群实际跑更新 tag 的情况(线上 `last-applied-configuration` 注解还停在更早的 apply 版本即是证据)。
+
+所以别对陈旧 manifest 直接 `kubectl apply -f`,它可能把文件里过时的字段回写、盖掉线上带外改动。先 `kubectl diff -f`(server 端 dry-run,只读)确认唯一实质差异就是镜像 tag;diff 若出现其它字段就停下核对,不要盲目 apply。lab 集群用 context `dengwu.wang-local-lab`、namespace `gemini`。
+
