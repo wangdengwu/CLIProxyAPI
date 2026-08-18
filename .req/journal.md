@@ -130,3 +130,56 @@ than reverting live fields. Better long-term fix: either commit istio/ or always
 ("flags cannot be placed before plugin name"); pass `--context`/`-n` inline per command.
 
 **Nothing left in this PRD.** Both tasks complete; proceeding to req:learn.
+## 2026-08-18 · task-complete · Task 1 (clear-ratelimit-block)
+Built. ClearRatelimitBlock + m.clearRatelimitBlock in sdk/cliproxy/auth/ratelimit_block.go,
+strict inverse of applyRatelimitBlock: under m.mu zero RatelimitBlockUntil, Unavailable=false,
+Status=StatusActive, StatusMessage="", NextRetryAfter=zero, then scheduler.upsertAuth(snapshot).
+In-memory only. Exported wrapper resolves activeRatelimitTarget, no-op on empty id / no manager.
+
+Verification. Inline TDD (controller both roles, subagents disallowed this session), red->green:
+4 behaviors appended to the existing ratelimit_block_test.go seam (LiftsBlockAndRestoresActive,
+SelectorStopsSkipping, UnknownOrEmptyNoop, NotBlockedIsIdempotent). Compile-fail red confirmed,
+then green; -race clean; full sdk/cliproxy/auth package regression green; go build ./... + vet OK.
+Commit 905b9677.
+
+Gotcha. detect_changes could not run — the gitnexus MCP connection is closed this session
+(-32000). Fell back to git diff --stat for scope proof: only ratelimit_block.go (+47) and its
+test (+80). GitNexus index is also stale (last 2c6b493); did not reindex.
+
+Coverage adversary. N/A by design — pure in-memory state mutation, no real-world data parsed.
+
+Left for Task 2. Wire ClearRatelimitBlock into the dedicated write path of PatchAuthFileFields.
+
+## 2026-08-18 · task-complete · Task 2 (usage-mode-management-api)
+Built. PatchAuthFileFields (internal/api/handlers/management/auth_files.go) gains an
+optional claude_usage_mode: normalizeClaudeUsageModeValue (inlined mirror of the unexported
+helps normalizer — management pkg cannot import runtime/executor/helps) maps
+exclusive->dedicated, unknown->"". dedicated writes both Metadata+Attributes and sets
+clearBlock; shared deletes both keys; invalid -> 400. After a successful authManager.Update,
+clearBlock triggers coreauth.ClearRatelimitBlock(id) (Task 1). ListAuthFiles exposes
+claude_usage_mode Attributes-first-then-Metadata in BOTH the manager path (buildAuthFileEntry)
+and the disk-fallback path (listAuthFilesFromDisk, via gjson) for parity with priority/note.
+Commit 078abe3e.
+
+Verification. Inline TDD red->green, 7 tests in new auth_files_usage_mode_test.go seam:
+dedicated-both-maps, shared-deletes-both, exclusive-normalizes, invalid->400-no-mutation,
+dedicated-clears-block, omit-leaves-untouched (regression guard), list-exposes/omits. 5 strong
+red first, then green; full management + sdk/cliproxy/auth packages green; go build ./... + vet
+clean. Only failure repo-wide is the pre-existing internal/registry TestCodexFreeModelsExcludeGPT55
+(documented failing on clean tree in prior PRDs; unrelated).
+
+Review finding (self, resolved by verification not code). The invalid-mode path returns 400
+after other fields may have mutated targetAuth. Checked: Manager.GetByID and List both return
+auth.Clone(), so targetAuth is a detached copy — bailing discards it, no partial in-memory leak.
+Left the mutate-then-validate ordering as-is (consistent with the rest of the handler); no early
+validation needed. This is the check to repeat if GetByID/List ever return live pointers.
+
+Coverage adversary. Skipped by design — CRUD over our own schema with a 3-value enum, no
+real-world data distribution to be wrong about (PRD declared no Known data variants).
+
+detect_changes. Not run — gitnexus MCP closed this session (-32000); index also stale (2c6b493).
+Scope proven via git show --stat: only auth_files.go (+81) and the new test (+233).
+
+Left for Task 3 (ready-for-human). Embedded companion page calling these two endpoints;
+manual browser verification.
+
