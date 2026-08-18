@@ -9,13 +9,14 @@
     --bg: #0f1117; --panel: #171a23; --panel-2: #1e222d; --line: #2a2f3a;
     --ink: #e6e8ee; --muted: #9aa3b2; --accent: #6ea8fe; --accent-ink: #0b1220;
     --ded: #f0a35e; --shared: #5fbf8f; --err: #f2668b; --ok: #5fbf8f;
+    --bar: #2a2f3a; --bar-lo: #5fbf8f; --bar-mid: #e0b25a; --bar-hi: #f2668b;
   }
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--bg); color: var(--ink);
     font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   }
-  .wrap { max-width: 880px; margin: 0 auto; padding: 32px 20px 64px; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 32px 20px 64px; }
   h1 { font-size: 20px; font-weight: 650; margin: 0 0 4px; letter-spacing: .2px; }
   .sub { color: var(--muted); margin: 0 0 24px; font-size: 13px; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin-bottom: 18px; }
@@ -48,12 +49,19 @@
   .empty { color: var(--muted); padding: 20px 10px; text-align: center; }
   .hint { color: var(--muted); font-size: 12px; margin-top: 10px; }
   .spin { opacity: .6; }
+  .usage { min-width: 120px; }
+  .usage .pct { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .usage .reset { display: block; color: var(--muted); font-size: 11px; }
+  .usage .na { color: var(--muted); }
+  .meter { height: 5px; border-radius: 3px; background: var(--bar); margin-top: 5px; overflow: hidden; }
+  .meter > i { display: block; height: 100%; border-radius: 3px; background: var(--bar-lo); }
+  .usage.loading .pct { color: var(--muted); }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>Claude Usage Mode</h1>
-  <p class="sub">Operator panel — set a Claude account to <b>shared</b> (throttled to preserve reserve) or <b>dedicated</b> (never throttled). Switching to dedicated also lifts any active rate-limit block immediately.</p>
+  <p class="sub">Operator panel — set a Claude account to <b>shared</b> (throttled to preserve reserve) or <b>dedicated</b> (never throttled), and see each account's live 5-hour / 7-day usage. Switching to dedicated also lifts any active rate-limit block immediately.</p>
 
   <div class="card">
     <label for="token">Management key</label>
@@ -114,6 +122,74 @@
     return p === "claude";
   }
 
+  // ---- pure:begin (extracted verbatim for node verification — keep self-contained) ----
+  // fmtPercent renders Anthropic's `utilization` (a 0..100 number, NOT a 0..1 ratio).
+  // Non-numbers (null/undefined/NaN) render as an em dash, never "NaN%".
+  function fmtPercent(u) {
+    if (typeof u !== "number" || !isFinite(u)) { return "—"; }
+    return Math.round(u) + "%";
+  }
+
+  // barWidth clamps utilization to a 0..100 CSS width; non-numbers collapse to 0.
+  function barWidth(u) {
+    if (typeof u !== "number" || !isFinite(u)) { return 0; }
+    return Math.max(0, Math.min(100, u));
+  }
+
+  // fmtReset turns an ISO-8601 `resets_at` (with fractional seconds and a +00:00 offset)
+  // into a short "resets in …" string, now injected for determinism. null/invalid -> "".
+  function fmtReset(iso, nowMs) {
+    if (!iso) { return ""; }
+    var t = Date.parse(iso);
+    if (isNaN(t)) { return ""; }
+    var diff = t - nowMs;
+    if (diff <= 0) { return "resetting…"; }
+    var mins = Math.floor(diff / 60000);
+    var days = Math.floor(mins / 1440);
+    var hrs = Math.floor((mins % 1440) / 60);
+    var m = mins % 60;
+    if (days > 0) { return "resets in " + days + "d " + hrs + "h"; }
+    if (hrs > 0) { return "resets in " + hrs + "h " + m + "m"; }
+    return "resets in " + m + "m";
+  }
+
+  // readUsage parses the api-call `body` STRING and pulls the 5h/7d windows. A missing or
+  // null window yields {util:null, reset:null}; an unparseable body yields null.
+  function readUsage(bodyStr) {
+    var data;
+    try { data = JSON.parse(bodyStr); } catch (e) { return null; }
+    if (!data || typeof data !== "object") { return null; }
+    var win = function (w) {
+      if (!w || typeof w !== "object") { return { util: null, reset: null }; }
+      var u = (typeof w.utilization === "number") ? w.utilization : null;
+      var r = (typeof w.resets_at === "string" && w.resets_at) ? w.resets_at : null;
+      return { util: u, reset: r };
+    };
+    return { fiveHour: win(data.five_hour), sevenDay: win(data.seven_day) };
+  }
+
+  // readEnvelope validates the api-call response envelope {status_code, body} and returns
+  // {ok:true, usage} only when the proxied call returned 200 and the body parsed.
+  function readEnvelope(env) {
+    if (!env || typeof env !== "object") { return { ok: false }; }
+    if (env.status_code !== 200) { return { ok: false }; }
+    var usage = readUsage(env.body);
+    if (!usage) { return { ok: false }; }
+    return { ok: true, usage: usage };
+  }
+  // ---- pure:end ----
+
+  function usageCell(win, nowMs) {
+    var pct = fmtPercent(win.util);
+    var reset = fmtReset(win.reset, nowMs);
+    var w = barWidth(win.util);
+    var cls = w >= 90 ? "var(--bar-hi)" : (w >= 70 ? "var(--bar-mid)" : "var(--bar-lo)");
+    var pctHtml = (pct === "—") ? '<span class="pct na">—</span>' : '<span class="pct">' + pct + '</span>';
+    return pctHtml +
+      '<div class="meter"><i style="width:' + w + '%;background:' + cls + '"></i></div>' +
+      (reset ? '<span class="reset">' + reset + '</span>' : '');
+  }
+
   function render(entries) {
     var claude = entries.filter(isClaude);
     if (!claude.length) {
@@ -124,27 +200,75 @@
       var id = e.id || e.name;
       var label = e.email || e.name || id;
       var mode = normalize(e.claude_usage_mode);
+      var idAttr = encodeURIComponent(id);
       var badge = '<span class="badge ' + mode + '">' + mode + '</span>';
       var sel =
-        '<select data-id="' + encodeURIComponent(id) + '" data-current="' + mode + '">' +
+        '<select data-id="' + idAttr + '" data-current="' + mode + '">' +
           '<option value="shared"' + (mode === "shared" ? " selected" : "") + '>shared</option>' +
           '<option value="dedicated"' + (mode === "dedicated" ? " selected" : "") + '>dedicated</option>' +
         '</select>';
       return '<tr>' +
         '<td class="acct">' + escapeHtml(label) +
           (label !== (e.name || id) ? '<small>' + escapeHtml(e.name || id) + '</small>' : '') + '</td>' +
+        '<td class="usage loading" data-usage="5h" data-row="' + idAttr + '"><span class="pct">…</span></td>' +
+        '<td class="usage loading" data-usage="7d" data-row="' + idAttr + '"><span class="pct">…</span></td>' +
         '<td>' + badge + '</td>' +
         '<td>' + sel + '</td>' +
       '</tr>';
     }).join("");
     host.innerHTML =
-      '<table><thead><tr><th>Account</th><th>Current</th><th>Set to</th></tr></thead>' +
+      '<table><thead><tr><th>Account</th><th>5h</th><th>7d</th><th>Current</th><th>Set to</th></tr></thead>' +
       '<tbody>' + rows + '</tbody></table>';
 
     Array.prototype.forEach.call(host.querySelectorAll("select"), function (s) {
       s.addEventListener("change", function () { onChange(s); });
     });
     refreshBtn.style.display = "";
+
+    // Fire an independent usage fetch per account — one slow/failed account must not
+    // block the others or the mode toggles.
+    claude.forEach(function (e) { fetchUsage(e.id || e.name); });
+  }
+
+  function usageCells(idAttr) {
+    return {
+      five: host.querySelector('td[data-usage="5h"][data-row="' + idAttr + '"]'),
+      seven: host.querySelector('td[data-usage="7d"][data-row="' + idAttr + '"]')
+    };
+  }
+
+  function setUsageUnavailable(cells) {
+    ["five", "seven"].forEach(function (k) {
+      if (cells[k]) { cells[k].classList.remove("loading"); cells[k].innerHTML = '<span class="na">unavailable</span>'; }
+    });
+  }
+
+  function fetchUsage(id) {
+    var idAttr = encodeURIComponent(id);
+    var cells = usageCells(idAttr);
+    var payload = {
+      auth_index: id,
+      method: "GET",
+      url: "https://api.anthropic.com/api/oauth/usage",
+      header: {
+        "Authorization": "Bearer $TOKEN$",
+        "Content-Type": "application/json",
+        "anthropic-beta": "oauth-2025-04-20"
+      }
+    };
+    fetch("/v0/management/api-call", { method: "POST", headers: headers(), body: JSON.stringify(payload) })
+      .then(function (r) {
+        if (!r.ok) { throw new Error("api-call " + r.status); }
+        return r.json();
+      })
+      .then(function (env) {
+        var res = readEnvelope(env);
+        if (!res.ok) { setUsageUnavailable(cells); return; }
+        var now = Date.now();
+        if (cells.five) { cells.five.classList.remove("loading"); cells.five.innerHTML = usageCell(res.usage.fiveHour, now); }
+        if (cells.seven) { cells.seven.classList.remove("loading"); cells.seven.innerHTML = usageCell(res.usage.sevenDay, now); }
+      })
+      .catch(function () { setUsageUnavailable(cells); });
   }
 
   function escapeHtml(s) {
