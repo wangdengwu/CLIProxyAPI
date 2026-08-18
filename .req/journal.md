@@ -277,3 +277,25 @@ Owed. One browser round-trip on lab covers everything now: mode toggle (Task 3) 
 quota rendering + the revoked-account 'unavailable' degrade. Then req:learn for the whole body of
 work (PRD + this ticket).
 
+## 2026-08-18 · task-complete · Iterate usage-mode: on-demand load + rate-limit error body
+Iterated on ticket usage-mode-quota-display from live operator feedback (two items):
+1) On-demand load, not fan-out. render() no longer auto-fetches every account on list load — each
+row has a per-row Load button (delegated click on the table host, so retry buttons survive
+re-render). Fanning out a usage call to every account on open could itself trip Anthropic rate
+limits (which is what the operator hit).
+2) Rate-limit error body. The operator captured a rate-limited account: the api-call body is valid
+JSON {"error":{"type":"rate_limit_error","message":...}} (pretty-printed, often HTTP 200).
+Old code parsed it, found no five_hour/seven_day, and showed two blank em-dashes — misleading.
+readEnvelope now checks for an  body FIRST (regardless of status_code) and returns
+{ok:false, reason}; the row shows 'rate limited' (humanized) with a retry. This was exactly the
+single-sample coverage gap flagged when the ticket shipped — the operator supplied the real sample.
+
+Verification. node /tmp/usage_pure_check.mjs (extracts the pure block verbatim from the file) now
+25 assertions over BOTH real samples (normal 45/35 + the real rate_limit_error body) plus variants:
+error-body-at-200 and error-body-at-429 both surface reason 'rate_limit_error'->'rate limited';
+over-limit 105.4%->'105%' + barWidth clamps to 100; null/absent windows still ok. go build ./...
+clean; gating test green; HTTP serve smoke: page 200, data-load button present, delegated handler
+present, NO auto-fetch-all on render, 'rate limited' present. Commit 65f8e65b on main.
+
+Owed. Redeploy (v2026.8.17) then the operator browser round-trip.
+
