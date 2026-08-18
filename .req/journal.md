@@ -232,3 +232,35 @@ Owed. Browser round-trip of the page against lab (render + toggle a real Claude 
 persist and that a blocked->dedicated account starts serving) — the only unverified piece; the
 page's underlying API calls are proven at the HTTP layer. Then req:learn for the PRD.
 
+## 2026-08-18 · task-complete · Ticket usage-mode-quota-display
+Built. usage-mode.html now shows per-Claude-account 5h/7d quota. Each row fetches on demand
+via POST /v0/management/api-call proxying GET api.anthropic.com/api/oauth/usage ($TOKEN$
+substituted server-side), parses the envelope body string, renders five_hour/seven_day.utilization
+(0..100 scale) + resets_at countdown + a meter bar. Per-account fetches independent; non-200
+status_code / failed api-call / unparseable body -> that row 'unavailable' only; null util/reset/
+window -> placeholders (no NaN / Invalid Date). Frontend-only, zero backend change. Commit fc81349c
+on feat/usage-mode-quota-display.
+
+Verification. Pure display/parse logic wrapped in a marked pure:begin/end block; a throwaway node
+script (/tmp/usage_pure_check.mjs, NOT committed — repo has no JS test infra, brief scopes out UI
+tests) extracts that block VERBATIM from the shipped file (no copy -> no drift), evals it, and runs
+30 assertions against the operator's REAL /api/oauth/usage sample plus every Known-data variant:
+45.0->45% (0..100 not 4500%), null/undefined/NaN util->em dash, null/garbage/past resets_at,
+null/absent five_hour->{null,null}, and envelope 401/500/unparseable/empty/null->not-ok. go build
+./... clean; gating test TestServeUsageModePanel still green (marker + management endpoint intact);
+HTTP serve smoke: /usage-mode.html 200 with the 5h/7d columns and the oauth/usage call present.
+
+Coverage adversary — independence not achieved. Subagents disallowed this session, so the
+real-world-data gate could not run as an independent subagent; the variant construction was done by
+the same context that wrote the code, and only ONE real sample exists. Residual unknown: the exact
+JSON of a 100%/rejected account (does utilization cap at 100? does a field flip?) can't be inferred
+from a single normal sample. barWidth clamps to 100 and fmtPercent would show e.g. 105% — no crash —
+but the precise shape is unverified. Flagged for the operator to confirm on lab if an over-limit
+account exists.
+
+Owed. Browser round-trip on lab: render, confirm live 5h/7d numbers appear per account and a
+revoked/expired account degrades to 'unavailable'. Needs deploy first (lab runs the image).
+
+detect_changes. Not run — gitnexus MCP closed (-32000), index stale (2c6b493). Scope: single file
+internal/api/usage-mode.html.
+
