@@ -348,6 +348,11 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 						fileData["note"] = trimmed
 					}
 				}
+				if mv := gjson.GetBytes(data, "claude_usage_mode"); mv.Exists() && mv.Type == gjson.String {
+					if trimmed := strings.TrimSpace(mv.String()); trimmed != "" {
+						fileData["claude_usage_mode"] = trimmed
+					}
+				}
 			}
 
 			files = append(files, fileData)
@@ -462,6 +467,17 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 		if rawNote, ok := auth.Metadata["note"].(string); ok {
 			if trimmed := strings.TrimSpace(rawNote); trimmed != "" {
 				entry["note"] = trimmed
+			}
+		}
+	}
+	// Expose claude_usage_mode (Attributes-first, then Metadata), mirroring priority/note.
+	// Absent key -> field omitted; clients treat absence as shared.
+	if mode := strings.TrimSpace(authAttribute(auth, "claude_usage_mode")); mode != "" {
+		entry["claude_usage_mode"] = mode
+	} else if auth.Metadata != nil {
+		if rawMode, ok := auth.Metadata["claude_usage_mode"].(string); ok {
+			if trimmed := strings.TrimSpace(rawMode); trimmed != "" {
+				entry["claude_usage_mode"] = trimmed
 			}
 		}
 	}
@@ -1129,12 +1145,13 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	}
 
 	var req struct {
-		Name     string            `json:"name"`
-		Prefix   *string           `json:"prefix"`
-		ProxyURL *string           `json:"proxy_url"`
-		Headers  map[string]string `json:"headers"`
-		Priority *int              `json:"priority"`
-		Note     *string           `json:"note"`
+		Name            string            `json:"name"`
+		Prefix          *string           `json:"prefix"`
+		ProxyURL        *string           `json:"proxy_url"`
+		Headers         map[string]string `json:"headers"`
+		Priority        *int              `json:"priority"`
+		Note            *string           `json:"note"`
+		ClaudeUsageMode *string           `json:"claude_usage_mode"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
@@ -1169,6 +1186,7 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	}
 
 	changed := false
+	clearBlock := false
 	if req.Prefix != nil {
 		prefix := strings.TrimSpace(*req.Prefix)
 		targetAuth.Prefix = prefix
@@ -1300,6 +1318,32 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		}
 		changed = true
 	}
+	if req.ClaudeUsageMode != nil {
+		if targetAuth.Metadata == nil {
+			targetAuth.Metadata = make(map[string]any)
+		}
+		if targetAuth.Attributes == nil {
+			targetAuth.Attributes = make(map[string]string)
+		}
+		switch normalizeClaudeUsageModeValue(*req.ClaudeUsageMode) {
+		case claudeUsageModeDedicated:
+			// Write the canonical value to both maps: Metadata is the on-disk source of
+			// truth, Attributes is the in-memory mirror the rate-limit accessor reads first.
+			targetAuth.Metadata["claude_usage_mode"] = claudeUsageModeDedicated
+			targetAuth.Attributes["claude_usage_mode"] = claudeUsageModeDedicated
+			clearBlock = true
+			changed = true
+		case claudeUsageModeShared:
+			// Unset resolves to the configured default (shared); empty-value-deletes,
+			// matching how priority/note are cleared above.
+			delete(targetAuth.Metadata, "claude_usage_mode")
+			delete(targetAuth.Attributes, "claude_usage_mode")
+			changed = true
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid claude_usage_mode (want shared or dedicated)"})
+			return
+		}
+	}
 
 	if !changed {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})
@@ -1313,7 +1357,32 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		return
 	}
 
+	// Switching to a non-throttled mode must lift any active rate-limit block so the
+	// account resumes taking traffic immediately, instead of waiting for the window reset.
+	if clearBlock {
+		coreauth.ClearRatelimitBlock(targetAuth.ID)
+	}
+
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+const (
+	claudeUsageModeShared    = "shared"
+	claudeUsageModeDedicated = "dedicated"
+)
+
+// normalizeClaudeUsageModeValue mirrors the canonical usage-mode normalizer in the
+// ratelimit policy layer (which is unexported): "shared" -> shared, "dedicated"/"exclusive"
+// -> dedicated, anything else -> "" (rejected by the caller).
+func normalizeClaudeUsageModeValue(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case claudeUsageModeShared:
+		return claudeUsageModeShared
+	case claudeUsageModeDedicated, "exclusive":
+		return claudeUsageModeDedicated
+	default:
+		return ""
+	}
 }
 
 func (h *Handler) disableAuth(ctx context.Context, id string) {
