@@ -264,3 +264,16 @@ revoked/expired account degrades to 'unavailable'. Needs deploy first (lab runs 
 detect_changes. Not run — gitnexus MCP closed (-32000), index stale (2c6b493). Scope: single file
 internal/api/usage-mode.html.
 
+## 2026-08-18 · task-complete · Deploy v2026.8.16 (quota display)
+Shipped. ff-merged feat/usage-mode-quota-display -> main (b9303178..1c68cc05), pushed; tagged
+v2026.8.16 on 1c68cc05 -> Action docker-image (run 32098407246, success) built+pushed multi-arch
+wangdengwu/cli-proxy-api:v2026.8.16. Deployed to lab dengwu.wang-local-lab ns gemini via
+kubectl set image (was cleanly on v2026.8.15). Rollout clean.
+
+Verified. Pod Running image v2026.8.16; startup log Version: v2026.8.16, Commit: 1c68cc0;
+/healthz ok; /usage-mode.html in-pod serves the 5h/7d columns + the api/oauth/usage call.
+
+Owed. One browser round-trip on lab covers everything now: mode toggle (Task 3) AND live 5h/7d
+quota rendering + the revoked-account 'unavailable' degrade. Then req:learn for the whole body of
+work (PRD + this ticket).
+
