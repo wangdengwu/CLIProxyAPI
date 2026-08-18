@@ -217,6 +217,11 @@
       var label = e.email || e.name || id;
       var mode = normalize(e.claude_usage_mode);
       var idAttr = encodeURIComponent(id);
+      // Usage is fetched by the credential's auth_index (a stable hex runtime id), NOT the
+      // filename/id — api-call resolves the token via authByIndex(auth_index). The mode
+      // toggle below still keys on id (PATCH matches by GetByID/FileName).
+      var ai = (e.auth_index == null ? "" : String(e.auth_index)).trim();
+      var aiAttr = encodeURIComponent(ai);
       var badge = '<span class="badge ' + mode + '">' + mode + '</span>';
       var sel =
         '<select data-id="' + idAttr + '" data-current="' + mode + '">' +
@@ -228,8 +233,10 @@
       return '<tr>' +
         '<td class="acct">' + escapeHtml(label) +
           (label !== (e.name || id) ? '<small>' + escapeHtml(e.name || id) + '</small>' : '') + '</td>' +
-        '<td class="usage" data-usage="5h" data-row="' + idAttr + '">' + loadButton(idAttr) + '</td>' +
-        '<td class="usage" data-usage="7d" data-row="' + idAttr + '"></td>' +
+        (ai
+          ? '<td class="usage" data-usage="5h" data-row="' + aiAttr + '">' + loadButton(aiAttr) + '</td>' +
+            '<td class="usage" data-usage="7d" data-row="' + aiAttr + '"></td>'
+          : '<td class="usage"><span class="na">—</span></td><td class="usage"></td>') +
         '<td>' + badge + '</td>' +
         '<td>' + sel + '</td>' +
       '</tr>';
@@ -258,13 +265,13 @@
     if (cells.seven) { cells.seven.innerHTML = ""; }
   }
 
-  function fetchUsage(id) {
-    var idAttr = encodeURIComponent(id);
+  function fetchUsage(authIndex) {
+    var idAttr = encodeURIComponent(authIndex);
     var cells = usageCells(idAttr);
     if (cells.five) { cells.five.innerHTML = '<span class="pct na">…</span>'; }
     if (cells.seven) { cells.seven.innerHTML = '<span class="pct na">…</span>'; }
     var payload = {
-      auth_index: id,
+      auth_index: authIndex,
       method: "GET",
       url: "https://api.anthropic.com/api/oauth/usage",
       header: {
