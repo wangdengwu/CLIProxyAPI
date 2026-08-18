@@ -55,3 +55,9 @@ Claude「shared」限流策略的默认值有**两处代码来源**,改一处必
 
 所以别对陈旧 manifest 直接 `kubectl apply -f`,它可能把文件里过时的字段回写、盖掉线上带外改动。先 `kubectl diff -f`(server 端 dry-run,只读)确认唯一实质差异就是镜像 tag;diff 若出现其它字段就停下核对,不要盲目 apply。lab 集群用 context `dengwu.wang-local-lab`、namespace `gemini`。
 
+## management-api-call-resolves-by-auth-index
+
+前端要按需拿某账号的上游数据（如 Claude `/api/oauth/usage` 的 5h/7d 额度）时，复用现成的 `POST /v0/management/api-call` 代理即可，后端零改动：请求体 `{auth_index, method, url, header}`，header 里的 `$TOKEN$` 由服务端替换成该账号 access token；响应 `{status_code, header, body}`，`body` 是上游响应体的**字符串**（要 `JSON.parse`，且先判 `status_code`；注意限流账号会返回 valid-JSON 的 `{"error":{"type":"rate_limit_error"}}`，常带 429）。
+
+关键陷阱：api-call 用 `authByIndex(auth_index)` 按 `auth.Index`（`EnsureIndex` 派生的十六进制运行时 id，如 `c4e92118e023e341`）匹配凭证 —— **不是**文件名/id。auth-files 列表暴露三种不可互换标识：`id`/`FileName`（给 `PATCH .../auth-files/fields` 与 `GetByID`）、`auth_index`（给 api-call/`authByIndex`）、`name`（展示）。给 api-call 传文件名会查不到凭证、`$TOKEN$` 不被替换、请求以字面 `$TOKEN$` 发出（表现为上游 401/429）。用列表 entry 的 `auth_index` 字段。
+

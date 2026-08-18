@@ -2,12 +2,12 @@
 
 ## Language
 
-**Claude_usage_mode**:
-Claude 账号的 auth 文件里的顶层键，标记该账号参不参与主动限流拦截。取值是小写字符串：`shared`（默认，未设置时即此）、`dedicated`、以及 `exclusive`（`dedicated` 的别名）。
+**Claude-usage-mode**:
+Claude 账号 auth 文件的顶层键，标记该账号参不参与主动限流拦截。取值小写字符串：`shared`（默认/未设置即此）、`dedicated`、`exclusive`（`dedicated` 的别名，读时归一化为 dedicated）。
 
-`shared` 账号受动态阈值拦截以保留余量；`dedicated` 账号不参与，会一直接流量。标记丢失即退回 `shared`，独占账号会被误拦并推出企微告警。
+`shared` 账号受动态阈值拦截以保留余量；`dedicated` 不参与、一直接流量。丢失即退回 `shared`，独占账号会被误拦并推企微告警。
 
-目前只能手工改文件设置 —— 管理接口的字段修改只认 `prefix` / `proxy_url` / `headers` / `priority` / `note`，不认这个键。
+现在可由运营者通过管理接口设置（不再只能手工改文件）：`PATCH /v0/management/auth-files/fields` 的白名单已含 `claude_usage_mode`（写 dedicated 时双写 Metadata+Attributes、shared 时双删，空值即删同 priority/note），`ListAuthFiles` 也吐出当前值；内嵌伴随页 `/usage-mode.html` 提供 shared/dedicated 开关 UI。翻成 `dedicated` 时会顺带清除该账号可能挂着的内存限流拦截块（`ClearRatelimitBlock`，`applyRatelimitBlock` 的逆），使其立即恢复接流量，而非等 5h 窗口自然重置。
 
 **Operator-set-keys**:
 auth 文件里由运营者（而非 OAuth 流程）设定的顶层键，表达运营意图而非身份凭证：`claude_usage_mode`、`priority`、`note`、`headers`、`prefix`、`proxy_url`、`excluded_models`。
