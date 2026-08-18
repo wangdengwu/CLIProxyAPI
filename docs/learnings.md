@@ -61,3 +61,15 @@ Claude「shared」限流策略的默认值有**两处代码来源**,改一处必
 
 关键陷阱：api-call 用 `authByIndex(auth_index)` 按 `auth.Index`（`EnsureIndex` 派生的十六进制运行时 id，如 `c4e92118e023e341`）匹配凭证 —— **不是**文件名/id。auth-files 列表暴露三种不可互换标识：`id`/`FileName`（给 `PATCH .../auth-files/fields` 与 `GetByID`）、`auth_index`（给 api-call/`authByIndex`）、`name`（展示）。给 api-call 传文件名会查不到凭证、`$TOKEN$` 不被替换、请求以字面 `$TOKEN$` 发出（表现为上游 401/429）。用列表 entry 的 `auth_index` 字段。
 
+## gitnexus-mcp-wedged-index-disconnect
+
+gitnexus MCP 工具突然全部返回 `-32000: Connection closed`（常伴随 'index is stale' 钩子提示）时，首要怀疑**索引 wedged**：某次增量索引被中途打断，留下 `incrementalInProgress` 标志未清 + 一个非空的 `.gitnexus/lbug.wal`（未提交的 kuzu WAL）。库卡在半完成状态 → MCP server 一开库查询就挂 → 客户端请求超时、把子进程判为断开 → 之后每个 gitnexus 调用都 `-32000`（进程已死、不自动重启，故是级联全挂）。
+
+判定（都不碰会卡死的查询路径，安全）：`test -s <repo>/.gitnexus/lbug.wal` 非空即 wedged；`gitnexus list` / `gitnexus doctor` 是只读元数据、能秒回。
+
+修复：`node .gitnexus/run.cjs analyze`（全量重建，清掉 WAL 与 incrementalInProgress 标志；本仓约 15s）。analyze 日志出现 'Previous incremental run did not complete cleanly ... forcing full rebuild' 即坐实此因。
+
+Fallback：CLI 与 MCP 共用同一个 LocalBackend，MCP 路径抽风时 CLI 子命令照常可用 —— `gitnexus <tool> --repo <name>`（如 detect-changes/query；多 repo 注册时**必须**带 --repo，否则快速报 'Multiple repositories indexed'）。
+
+预防：别中途打断 analyze/索引，也留意会触发它的 PreToolUse/PostToolUse gitnexus 钩子 —— 半途被杀正是 wedged 成因。MCP server 在会话启动时才拉起，重建索引后需**重启会话**才生效。
+
