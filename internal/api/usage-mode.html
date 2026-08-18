@@ -32,6 +32,7 @@
     padding: 9px 14px; font-size: 14px; font-weight: 600; cursor: pointer;
   }
   button.ghost { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); }
+  button.mini { background: var(--panel-2); color: var(--accent); border: 1px solid var(--line); padding: 4px 10px; font-size: 12px; font-weight: 600; }
   button:disabled { opacity: .5; cursor: default; }
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: 11px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
@@ -53,15 +54,15 @@
   .usage .pct { font-weight: 600; font-variant-numeric: tabular-nums; }
   .usage .reset { display: block; color: var(--muted); font-size: 11px; }
   .usage .na { color: var(--muted); }
+  .usage .why { color: var(--err); font-size: 12px; margin-right: 6px; }
   .meter { height: 5px; border-radius: 3px; background: var(--bar); margin-top: 5px; overflow: hidden; }
   .meter > i { display: block; height: 100%; border-radius: 3px; background: var(--bar-lo); }
-  .usage.loading .pct { color: var(--muted); }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>Claude Usage Mode</h1>
-  <p class="sub">Operator panel — set a Claude account to <b>shared</b> (throttled to preserve reserve) or <b>dedicated</b> (never throttled), and see each account's live 5-hour / 7-day usage. Switching to dedicated also lifts any active rate-limit block immediately.</p>
+  <p class="sub">Operator panel — set a Claude account to <b>shared</b> (throttled to preserve reserve) or <b>dedicated</b> (never throttled), and load each account's 5-hour / 7-day usage on demand. Switching to dedicated also lifts any active rate-limit block immediately.</p>
 
   <div class="card">
     <label for="token">Management key</label>
@@ -102,14 +103,8 @@
   }
 
   function token() { return (tokenEl.value || "").trim(); }
-
-  function saveToken() {
-    try { localStorage.setItem(TOKEN_KEY, token()); } catch (e) {}
-  }
-
-  function headers() {
-    return { "Authorization": "Bearer " + token(), "Content-Type": "application/json" };
-  }
+  function saveToken() { try { localStorage.setItem(TOKEN_KEY, token()); } catch (e) {} }
+  function headers() { return { "Authorization": "Bearer " + token(), "Content-Type": "application/json" }; }
 
   // "dedicated" and its alias "exclusive" both mean dedicated; anything else is shared.
   function normalize(mode) {
@@ -153,29 +148,46 @@
     return "resets in " + m + "m";
   }
 
-  // readUsage parses the api-call `body` STRING and pulls the 5h/7d windows. A missing or
-  // null window yields {util:null, reset:null}; an unparseable body yields null.
-  function readUsage(bodyStr) {
-    var data;
-    try { data = JSON.parse(bodyStr); } catch (e) { return null; }
-    if (!data || typeof data !== "object") { return null; }
-    var win = function (w) {
-      if (!w || typeof w !== "object") { return { util: null, reset: null }; }
-      var u = (typeof w.utilization === "number") ? w.utilization : null;
-      var r = (typeof w.resets_at === "string" && w.resets_at) ? w.resets_at : null;
-      return { util: u, reset: r };
-    };
-    return { fiveHour: win(data.five_hour), sevenDay: win(data.seven_day) };
+  // parseBody turns the api-call `body` STRING into an object, or null if unparseable.
+  function parseBody(bodyStr) {
+    var d;
+    try { d = JSON.parse(bodyStr); } catch (e) { return null; }
+    return (d && typeof d === "object") ? d : null;
   }
 
-  // readEnvelope validates the api-call response envelope {status_code, body} and returns
-  // {ok:true, usage} only when the proxied call returned 200 and the body parsed.
+  // windowOf reads one usage window; a missing/null window yields {util:null, reset:null}.
+  function windowOf(w) {
+    if (!w || typeof w !== "object") { return { util: null, reset: null }; }
+    var u = (typeof w.utilization === "number") ? w.utilization : null;
+    var r = (typeof w.resets_at === "string" && w.resets_at) ? w.resets_at : null;
+    return { util: u, reset: r };
+  }
+
+  // errText extracts a short label from an upstream error object/string.
+  function errText(err) {
+    if (!err) { return "error"; }
+    if (typeof err === "string") { return err; }
+    if (typeof err === "object") { return (err.type || err.message || "error").toString(); }
+    return "error";
+  }
+
+  // readEnvelope validates the api-call envelope {status_code, body}. An `error` body is
+  // meaningful even at status 200 (a rate-limited account returns
+  // {"error":{"type":"rate_limit_error",...}}), so it is surfaced as a reason regardless of
+  // status_code. Only a 200 with parseable, error-free body yields usage.
   function readEnvelope(env) {
-    if (!env || typeof env !== "object") { return { ok: false }; }
-    if (env.status_code !== 200) { return { ok: false }; }
-    var usage = readUsage(env.body);
-    if (!usage) { return { ok: false }; }
-    return { ok: true, usage: usage };
+    if (!env || typeof env !== "object") { return { ok: false, reason: "no response" }; }
+    var parsed = parseBody(env.body);
+    if (parsed && parsed.error) { return { ok: false, reason: errText(parsed.error) }; }
+    if (env.status_code !== 200) { return { ok: false, reason: "HTTP " + env.status_code }; }
+    if (!parsed) { return { ok: false, reason: "bad response" }; }
+    return { ok: true, usage: { fiveHour: windowOf(parsed.five_hour), sevenDay: windowOf(parsed.seven_day) } };
+  }
+
+  // reasonLabel humanizes the common upstream reasons for display.
+  function reasonLabel(r) {
+    if (r === "rate_limit_error") { return "rate limited"; }
+    return r || "unavailable";
   }
   // ---- pure:end ----
 
@@ -188,6 +200,10 @@
     return pctHtml +
       '<div class="meter"><i style="width:' + w + '%;background:' + cls + '"></i></div>' +
       (reset ? '<span class="reset">' + reset + '</span>' : '');
+  }
+
+  function loadButton(idAttr, label) {
+    return '<button class="mini" data-load="' + idAttr + '">' + (label || "Load") + '</button>';
   }
 
   function render(entries) {
@@ -207,11 +223,13 @@
           '<option value="shared"' + (mode === "shared" ? " selected" : "") + '>shared</option>' +
           '<option value="dedicated"' + (mode === "dedicated" ? " selected" : "") + '>dedicated</option>' +
         '</select>';
+      // Usage is NOT auto-fetched — one click per account, on demand, so opening the page
+      // does not fan out a request to every account (which itself can trip rate limits).
       return '<tr>' +
         '<td class="acct">' + escapeHtml(label) +
           (label !== (e.name || id) ? '<small>' + escapeHtml(e.name || id) + '</small>' : '') + '</td>' +
-        '<td class="usage loading" data-usage="5h" data-row="' + idAttr + '"><span class="pct">…</span></td>' +
-        '<td class="usage loading" data-usage="7d" data-row="' + idAttr + '"><span class="pct">…</span></td>' +
+        '<td class="usage" data-usage="5h" data-row="' + idAttr + '">' + loadButton(idAttr) + '</td>' +
+        '<td class="usage" data-usage="7d" data-row="' + idAttr + '"></td>' +
         '<td>' + badge + '</td>' +
         '<td>' + sel + '</td>' +
       '</tr>';
@@ -224,10 +242,6 @@
       s.addEventListener("change", function () { onChange(s); });
     });
     refreshBtn.style.display = "";
-
-    // Fire an independent usage fetch per account — one slow/failed account must not
-    // block the others or the mode toggles.
-    claude.forEach(function (e) { fetchUsage(e.id || e.name); });
   }
 
   function usageCells(idAttr) {
@@ -237,15 +251,18 @@
     };
   }
 
-  function setUsageUnavailable(cells) {
-    ["five", "seven"].forEach(function (k) {
-      if (cells[k]) { cells[k].classList.remove("loading"); cells[k].innerHTML = '<span class="na">unavailable</span>'; }
-    });
+  function setUsageUnavailable(cells, idAttr, reason) {
+    if (cells.five) {
+      cells.five.innerHTML = '<span class="why">' + escapeHtml(reasonLabel(reason)) + '</span>' + loadButton(idAttr, "retry");
+    }
+    if (cells.seven) { cells.seven.innerHTML = ""; }
   }
 
   function fetchUsage(id) {
     var idAttr = encodeURIComponent(id);
     var cells = usageCells(idAttr);
+    if (cells.five) { cells.five.innerHTML = '<span class="pct na">…</span>'; }
+    if (cells.seven) { cells.seven.innerHTML = '<span class="pct na">…</span>'; }
     var payload = {
       auth_index: id,
       method: "GET",
@@ -258,17 +275,18 @@
     };
     fetch("/v0/management/api-call", { method: "POST", headers: headers(), body: JSON.stringify(payload) })
       .then(function (r) {
+        if (r.status === 401 || r.status === 403) { throw new Error("unauthorized"); }
         if (!r.ok) { throw new Error("api-call " + r.status); }
         return r.json();
       })
       .then(function (env) {
         var res = readEnvelope(env);
-        if (!res.ok) { setUsageUnavailable(cells); return; }
+        if (!res.ok) { setUsageUnavailable(cells, idAttr, res.reason); return; }
         var now = Date.now();
-        if (cells.five) { cells.five.classList.remove("loading"); cells.five.innerHTML = usageCell(res.usage.fiveHour, now); }
-        if (cells.seven) { cells.seven.classList.remove("loading"); cells.seven.innerHTML = usageCell(res.usage.sevenDay, now); }
+        if (cells.five) { cells.five.innerHTML = usageCell(res.usage.fiveHour, now); }
+        if (cells.seven) { cells.seven.innerHTML = usageCell(res.usage.sevenDay, now); }
       })
-      .catch(function () { setUsageUnavailable(cells); });
+      .catch(function (err) { setUsageUnavailable(cells, idAttr, (err && err.message) || "unavailable"); });
   }
 
   function escapeHtml(s) {
@@ -291,7 +309,7 @@
       .then(function (data) {
         var files = (data && data.files) || [];
         render(files);
-        setMsg(files.filter(isClaude).length + " Claude account(s).", "ok");
+        setMsg(files.filter(isClaude).length + " Claude account(s). Click Load on a row to fetch its usage.", "ok");
       })
       .catch(function (err) { setMsg(err.message || String(err), "err"); })
       .then(function () { host.classList.remove("spin"); });
@@ -328,6 +346,12 @@
         sel.disabled = false;
       });
   }
+
+  // Delegated so on-demand Load/retry buttons work across re-renders.
+  host.addEventListener("click", function (e) {
+    var b = e.target.closest ? e.target.closest("[data-load]") : null;
+    if (b) { fetchUsage(decodeURIComponent(b.getAttribute("data-load"))); }
+  });
 
   loadBtn.addEventListener("click", loadAccounts);
   refreshBtn.addEventListener("click", loadAccounts);
