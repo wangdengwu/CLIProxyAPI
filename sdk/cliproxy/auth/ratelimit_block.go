@@ -80,3 +80,50 @@ func (m *Manager) applyRatelimitBlock(authID string, resetAt time.Time) {
 		"ratelimit_block_until": resetAt.Format(time.RFC3339),
 	}).Info("claude ratelimit block applied")
 }
+
+// ClearRatelimitBlock lifts an in-memory rate-limit block on authID immediately via the
+// active Manager's locked write path, the inverse of ApplyRatelimitBlock. It is a no-op
+// when authID is empty or there is no active Manager. Used when an account is switched to
+// a usage mode that must not be throttled (dedicated), so it resumes taking traffic at
+// once instead of waiting for the window reset.
+func ClearRatelimitBlock(authID string) {
+	if authID == "" {
+		return
+	}
+	m := activeRatelimitTarget.Load()
+	if m == nil {
+		log.WithField("auth_id", authID).Warn("claude ratelimit clear skipped: no active manager")
+		return
+	}
+	m.clearRatelimitBlock(authID)
+}
+
+// clearRatelimitBlock zeroes the durable RatelimitBlockUntil and restores the auth to an
+// active, available state, mirroring applyRatelimitBlock's locked-write pattern in
+// reverse: mutate m.auths[authID] under m.mu, then refresh the scheduler so selection
+// resumes picking the auth. In-memory only; a no-op for unknown auth IDs.
+func (m *Manager) clearRatelimitBlock(authID string) {
+	if m == nil || authID == "" {
+		return
+	}
+	now := time.Now()
+	var snapshot *Auth
+	m.mu.Lock()
+	if auth, ok := m.auths[authID]; ok && auth != nil {
+		auth.RatelimitBlockUntil = time.Time{}
+		auth.Unavailable = false
+		auth.Status = StatusActive
+		auth.StatusMessage = ""
+		auth.NextRetryAfter = time.Time{}
+		auth.UpdatedAt = now
+		snapshot = auth.Clone()
+	}
+	m.mu.Unlock()
+	if snapshot == nil {
+		return
+	}
+	if m.scheduler != nil {
+		m.scheduler.upsertAuth(snapshot)
+	}
+	log.WithField("auth_id", authID).Info("claude ratelimit block cleared")
+}

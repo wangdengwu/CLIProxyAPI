@@ -180,6 +180,86 @@ func TestApplyRatelimitBlock_NoRace(t *testing.T) {
 	<-done
 }
 
+// clearRatelimitBlock is the inverse of applyRatelimitBlock: on a currently-blocked
+// auth it zeroes RatelimitBlockUntil, clears Unavailable, restores active status, and
+// zeroes NextRetryAfter — through the locked map path.
+func TestClearRatelimitBlock_LiftsBlockAndRestoresActive(t *testing.T) {
+	m := newTestManager()
+	reset := time.Now().Add(3 * time.Hour)
+	m.auths["a1"] = &Auth{ID: "a1", Provider: "claude"}
+	m.applyRatelimitBlock("a1", reset)
+
+	m.clearRatelimitBlock("a1")
+
+	got := m.auths["a1"]
+	if !got.RatelimitBlockUntil.IsZero() {
+		t.Fatalf("RatelimitBlockUntil = %v, want zero", got.RatelimitBlockUntil)
+	}
+	if got.Unavailable {
+		t.Fatal("auth must not be Unavailable after clear")
+	}
+	if got.Status != StatusActive {
+		t.Fatalf("Status = %q, want StatusActive", got.Status)
+	}
+	if !got.NextRetryAfter.IsZero() {
+		t.Fatalf("NextRetryAfter = %v, want zero", got.NextRetryAfter)
+	}
+}
+
+// End-to-end: after clearing, the selector stops skipping the auth — it returns to the
+// available set immediately (no waiting for the reset time).
+func TestClearRatelimitBlock_SelectorStopsSkipping(t *testing.T) {
+	m := newTestManager()
+	reset := time.Now().Add(2 * time.Hour)
+	a1 := &Auth{ID: "a1", Provider: "claude"}
+	a2 := &Auth{ID: "a2", Provider: "claude"}
+	m.auths["a1"] = a1
+	m.auths["a2"] = a2
+	model := "claude-opus-4-8"
+
+	m.applyRatelimitBlock("a1", reset)
+	now := time.Now()
+	avail, err := m.availableAuthsForRouteModel([]*Auth{a1, a2}, "claude", model, now)
+	if err != nil || len(avail) != 1 || avail[0].ID != "a2" {
+		t.Fatalf("precondition: expected only a2 available, got %v (err %v)", authIDs(avail), err)
+	}
+
+	m.clearRatelimitBlock("a1")
+
+	avail, err = m.availableAuthsForRouteModel([]*Auth{a1, a2}, "claude", model, now)
+	if err != nil {
+		t.Fatalf("unexpected error after clear: %v", err)
+	}
+	if len(avail) != 2 {
+		t.Fatalf("expected both auths available after clear, got %v", authIDs(avail))
+	}
+}
+
+// Clearing an unknown or empty auth ID is a no-op and must not panic.
+func TestClearRatelimitBlock_UnknownOrEmptyNoop(t *testing.T) {
+	m := newTestManager()
+	m.clearRatelimitBlock("missing") // must not panic
+	m.clearRatelimitBlock("")        // must not panic
+	if len(m.auths) != 0 {
+		t.Fatalf("clear must not create map entries, got %d", len(m.auths))
+	}
+}
+
+// Clearing an auth that is not currently blocked is a harmless idempotent no-op:
+// it must not falsely mark an already-active auth or invent a block.
+func TestClearRatelimitBlock_NotBlockedIsIdempotent(t *testing.T) {
+	m := newTestManager()
+	m.auths["a1"] = &Auth{ID: "a1", Provider: "claude"} // never blocked
+
+	m.clearRatelimitBlock("a1")
+
+	got := m.auths["a1"]
+	if got.Unavailable || !got.RatelimitBlockUntil.IsZero() || !got.NextRetryAfter.IsZero() {
+		t.Fatalf("clear on a non-blocked auth changed nothing observable expected: Unavailable=%v BlockUntil=%v NextRetry=%v",
+			got.Unavailable, got.RatelimitBlockUntil, got.NextRetryAfter)
+	}
+}
+
 func authIDs(auths []*Auth) []string {
 	ids := make([]string, 0, len(auths))
 	for _, a := range auths {
