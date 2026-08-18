@@ -299,3 +299,20 @@ present, NO auto-fetch-all on render, 'rate limited' present. Commit 65f8e65b on
 
 Owed. Redeploy (v2026.8.17) then the operator browser round-trip.
 
+## 2026-08-18 · task-complete · Fix usage fetch: auth_index not filename
+Fixed the usage-fetch identifier bug the operator caught by diffing the working panel request.
+The api-call endpoint resolves the per-account token via authByIndex(auth_index), matching auth.Index
+(a stable hex runtime id like c4e92118e023e341, exposed as entry.auth_index). The page was passing
+the filename/id (claude-hai.yang@sayweee.com.json) as auth_index -> lookup miss -> $TOKEN$ left
+literal -> unauthenticated upstream call -> 429 rate_limit_error. Fix: per-row Load now uses
+e.auth_index; accounts with no auth_index render an em-dash and no Load button. Mode toggle still
+keys on id (PATCH matches GetByID/FileName) — the two operations legitimately use different ids.
+
+Verification. Whole-<script> JS syntax compile check via new Function (catches render/template
+errors go build + the pure-block node test cannot); auth_index wiring greps present; node pure
+assertions still 25/25; go build + gating test green. Commit pending tag v2026.8.18.
+
+Learning worth keeping: the auth-files list exposes THREE distinct identifiers — id/FileName (for
+PATCH/GetByID) and auth_index (for api-call/authByIndex). They are not interchangeable; api-call
+needs auth_index specifically.
+
