@@ -48,6 +48,9 @@ import (
 //go:embed index.html
 var indexHTMLTemplate string
 
+//go:embed usage-mode.html
+var usageModeHTML string
+
 const oauthCallbackSuccessHTML = `<html><head><meta charset="utf-8"><title>Authentication successful</title><script>setTimeout(function(){window.close();},5000);</script></head><body><h1>Authentication successful!</h1><p>You can close this window.</p><p>This window will close automatically in 5 seconds.</p></body></html>`
 
 type serverOptionConfig struct {
@@ -345,6 +348,7 @@ func (s *Server) setupRoutes() {
 	s.engine.HEAD("/healthz", healthzHandler)
 
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
+	s.engine.GET("/usage-mode.html", s.serveUsageModePanel)
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
 	geminiCLIHandlers := gemini.NewGeminiCLIAPIHandler(s.handlers)
@@ -709,6 +713,22 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 	}
 
 	c.File(filePath)
+}
+
+// serveUsageModePanel serves the embedded operator companion page for setting a Claude
+// account's usage mode. Unlike management.html this asset is embedded in the binary (not
+// fetched from the external control-panel project), so we fully own it and it is never
+// overwritten by the management-asset updater. The HTML is served unauthenticated — the
+// page's JS authenticates its /v0/management/* calls with the management key — and, like
+// the control panel, it is gated off when the control panel is disabled.
+func (s *Server) serveUsageModePanel(c *gin.Context) {
+	cfg := s.cfg
+	if cfg == nil || cfg.RemoteManagement.DisableControlPanel {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.String(http.StatusOK, usageModeHTML)
 }
 
 func (s *Server) enableKeepAlive(timeout time.Duration, onTimeout func()) {

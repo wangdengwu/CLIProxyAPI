@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Usage Mode — Operator Panel</title>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #171a23; --panel-2: #1e222d; --line: #2a2f3a;
+    --ink: #e6e8ee; --muted: #9aa3b2; --accent: #6ea8fe; --accent-ink: #0b1220;
+    --ded: #f0a35e; --shared: #5fbf8f; --err: #f2668b; --ok: #5fbf8f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { font-size: 20px; font-weight: 650; margin: 0 0 4px; letter-spacing: .2px; }
+  .sub { color: var(--muted); margin: 0 0 24px; font-size: 13px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin-bottom: 18px; }
+  label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: .5px; }
+  .row { display: flex; gap: 10px; align-items: center; }
+  input[type=password], input[type=text] {
+    flex: 1; background: var(--panel-2); border: 1px solid var(--line); color: var(--ink);
+    border-radius: 8px; padding: 9px 11px; font-size: 14px; outline: none;
+  }
+  input:focus { border-color: var(--accent); }
+  button {
+    background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 8px;
+    padding: 9px 14px; font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  button.ghost { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); }
+  button:disabled { opacity: .5; cursor: default; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 11px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; font-weight: 600; }
+  tr:last-child td { border-bottom: 0; }
+  .acct { font-weight: 550; }
+  .acct small { display: block; color: var(--muted); font-weight: 400; font-size: 12px; }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .badge.shared { color: var(--shared); background: rgba(95,191,143,.12); }
+  .badge.dedicated { color: var(--ded); background: rgba(240,163,94,.14); }
+  select { background: var(--panel-2); border: 1px solid var(--line); color: var(--ink); border-radius: 8px; padding: 7px 9px; font-size: 13px; }
+  .msg { margin-top: 12px; font-size: 13px; min-height: 18px; }
+  .msg.err { color: var(--err); }
+  .msg.ok { color: var(--ok); }
+  .empty { color: var(--muted); padding: 20px 10px; text-align: center; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 10px; }
+  .spin { opacity: .6; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Claude Usage Mode</h1>
+  <p class="sub">Operator panel — set a Claude account to <b>shared</b> (throttled to preserve reserve) or <b>dedicated</b> (never throttled). Switching to dedicated also lifts any active rate-limit block immediately.</p>
+
+  <div class="card">
+    <label for="token">Management key</label>
+    <div class="row">
+      <input id="token" type="password" placeholder="same key you use for the control panel" autocomplete="off">
+      <button id="load">Load accounts</button>
+    </div>
+    <div class="hint">Stored only in this browser (localStorage). Sent as <code>Authorization: Bearer …</code> to the management API.</div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content: space-between; margin-bottom: 6px;">
+      <label style="margin:0;">Claude accounts</label>
+      <button id="refresh" class="ghost" style="display:none;">Refresh</button>
+    </div>
+    <div id="tableHost">
+      <div class="empty">Enter your management key and load accounts.</div>
+    </div>
+    <div id="msg" class="msg"></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var TOKEN_KEY = "cliproxy.mgmtKey";
+  var $ = function (id) { return document.getElementById(id); };
+  var tokenEl = $("token"), loadBtn = $("load"), refreshBtn = $("refresh"),
+      host = $("tableHost"), msg = $("msg");
+
+  var saved = "";
+  try { saved = localStorage.getItem(TOKEN_KEY) || ""; } catch (e) {}
+  if (saved) { tokenEl.value = saved; }
+
+  function setMsg(text, kind) {
+    msg.textContent = text || "";
+    msg.className = "msg" + (kind ? " " + kind : "");
+  }
+
+  function token() { return (tokenEl.value || "").trim(); }
+
+  function saveToken() {
+    try { localStorage.setItem(TOKEN_KEY, token()); } catch (e) {}
+  }
+
+  function headers() {
+    return { "Authorization": "Bearer " + token(), "Content-Type": "application/json" };
+  }
+
+  // "dedicated" and its alias "exclusive" both mean dedicated; anything else is shared.
+  function normalize(mode) {
+    var m = (mode || "").toString().trim().toLowerCase();
+    return (m === "dedicated" || m === "exclusive") ? "dedicated" : "shared";
+  }
+
+  function isClaude(entry) {
+    var p = (entry.provider || entry.type || "").toString().trim().toLowerCase();
+    return p === "claude";
+  }
+
+  function render(entries) {
+    var claude = entries.filter(isClaude);
+    if (!claude.length) {
+      host.innerHTML = '<div class="empty">No Claude accounts found.</div>';
+      return;
+    }
+    var rows = claude.map(function (e) {
+      var id = e.id || e.name;
+      var label = e.email || e.name || id;
+      var mode = normalize(e.claude_usage_mode);
+      var badge = '<span class="badge ' + mode + '">' + mode + '</span>';
+      var sel =
+        '<select data-id="' + encodeURIComponent(id) + '" data-current="' + mode + '">' +
+          '<option value="shared"' + (mode === "shared" ? " selected" : "") + '>shared</option>' +
+          '<option value="dedicated"' + (mode === "dedicated" ? " selected" : "") + '>dedicated</option>' +
+        '</select>';
+      return '<tr>' +
+        '<td class="acct">' + escapeHtml(label) +
+          (label !== (e.name || id) ? '<small>' + escapeHtml(e.name || id) + '</small>' : '') + '</td>' +
+        '<td>' + badge + '</td>' +
+        '<td>' + sel + '</td>' +
+      '</tr>';
+    }).join("");
+    host.innerHTML =
+      '<table><thead><tr><th>Account</th><th>Current</th><th>Set to</th></tr></thead>' +
+      '<tbody>' + rows + '</tbody></table>';
+
+    Array.prototype.forEach.call(host.querySelectorAll("select"), function (s) {
+      s.addEventListener("change", function () { onChange(s); });
+    });
+    refreshBtn.style.display = "";
+  }
+
+  function escapeHtml(s) {
+    return (s == null ? "" : String(s)).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function loadAccounts() {
+    if (!token()) { setMsg("Enter your management key first.", "err"); return; }
+    saveToken();
+    setMsg("Loading…");
+    host.classList.add("spin");
+    fetch("/v0/management/auth-files", { headers: headers() })
+      .then(function (r) {
+        if (r.status === 401 || r.status === 403) { throw new Error("Unauthorized — check the management key."); }
+        if (!r.ok) { throw new Error("Load failed (HTTP " + r.status + ")."); }
+        return r.json();
+      })
+      .then(function (data) {
+        var files = (data && data.files) || [];
+        render(files);
+        setMsg(files.filter(isClaude).length + " Claude account(s).", "ok");
+      })
+      .catch(function (err) { setMsg(err.message || String(err), "err"); })
+      .then(function () { host.classList.remove("spin"); });
+  }
+
+  function onChange(sel) {
+    var id = decodeURIComponent(sel.getAttribute("data-id"));
+    var current = sel.getAttribute("data-current");
+    var next = sel.value;
+    if (next === current) { return; }
+    sel.disabled = true;
+    setMsg("Updating " + id + " → " + next + "…");
+    fetch("/v0/management/auth-files/fields", {
+      method: "PATCH",
+      headers: headers(),
+      body: JSON.stringify({ name: id, claude_usage_mode: next })
+    })
+      .then(function (r) {
+        if (r.status === 401 || r.status === 403) { throw new Error("Unauthorized — check the management key."); }
+        if (!r.ok) {
+          return r.json().catch(function () { return {}; }).then(function (b) {
+            throw new Error(b.error || ("Update failed (HTTP " + r.status + ")."));
+          });
+        }
+        return r.json().catch(function () { return {}; });
+      })
+      .then(function () {
+        setMsg(id + " set to " + next + (next === "dedicated" ? " (block lifted if any)." : "."), "ok");
+        loadAccounts();
+      })
+      .catch(function (err) {
+        setMsg(err.message || String(err), "err");
+        sel.value = current; // revert the control on failure
+        sel.disabled = false;
+      });
+  }
+
+  loadBtn.addEventListener("click", loadAccounts);
+  refreshBtn.addEventListener("click", loadAccounts);
+  tokenEl.addEventListener("keydown", function (e) { if (e.key === "Enter") { loadAccounts(); } });
+})();
+</script>
+</body>
+</html>
