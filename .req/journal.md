@@ -213,3 +213,22 @@ do this on lab post-deploy.
 detect_changes. Not run — gitnexus MCP closed (-32000), index stale (2c6b493). Scope via git:
 server.go (embed var + 1 route + serveUsageModePanel), new usage-mode.html, new gating test.
 
+## 2026-08-18 · task-complete · Release + lab deploy v2026.8.15
+Shipped. ff-merged feat/operator-usage-mode-companion-page -> main (82466aa1..7b6b8188),
+pushed; tagged v2026.8.15 on 7b6b8188 -> GitHub Action docker-image.yml built+pushed multi-arch
+wangdengwu/cli-proxy-api:v2026.8.15 (run 32096568248, success). Deployed to lab context
+dengwu.wang-local-lab ns gemini.
+
+Deploy method — used kubectl set image, not apply. Live deploy was cleanly at v2026.8.14 this
+time (no out-of-band image drift, unlike the 8.13-vs-manifest-7.4 drift last PRD). Bumped only the
+image via set image deployment/cliproxyapi server=...:v2026.8.15 — the journal-recommended
+long-term fix that sidesteps the gitignored istio/deployment.yaml drift entirely. Rollout clean.
+
+Verified. Pod cliproxyapi-6d746d7767-qpxcc Running image v2026.8.15; startup log
+'CLIProxyAPI Version: v2026.8.15, Commit: 7b6b818'; /healthz {"status":"ok"}; and the new
+feature route in-pod: GET /usage-mode.html -> HTTP 200 with the page marker.
+
+Owed. Browser round-trip of the page against lab (render + toggle a real Claude account + confirm
+persist and that a blocked->dedicated account starts serving) — the only unverified piece; the
+page's underlying API calls are proven at the HTTP layer. Then req:learn for the PRD.
+
