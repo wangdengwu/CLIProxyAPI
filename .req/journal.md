@@ -316,3 +316,11 @@ Learning worth keeping: the auth-files list exposes THREE distinct identifiers �
 PATCH/GetByID) and auth_index (for api-call/authByIndex). They are not interchangeable; api-call
 needs auth_index specifically.
 
+## 2026-08-18 · verify-evidence · Operator browser verification PASSED (v2026.8.18)
+Operator browser round-trip on lab v2026.8.18 PASSED — confirmed 'can now'. This closes the
+owed manual verification across the whole body of work: the shared/dedicated toggle (Task 3),
+per-account on-demand 5h/7d quota load, the rate_limit_error 'rate limited' degrade, and the
+auth_index fix (Load now returns real usage). PRD 2026-08-17... wait — PRD
+2026-08-18-operator-usage-mode-companion-page (tasks 1-3) + ticket usage-mode-quota-display +
+its two follow-up fixes are all delivered and verified. Ready for req:learn.
+
