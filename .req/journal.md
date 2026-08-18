@@ -183,3 +183,33 @@ Scope proven via git show --stat: only auth_files.go (+81) and the new test (+23
 Left for Task 3 (ready-for-human). Embedded companion page calling these two endpoints;
 manual browser verification.
 
+## 2026-08-18 · task-complete · Task 3 (operator-companion-page)
+Built. Embedded operator companion page. internal/api/usage-mode.html (go:embed
+usageModeHTML), route s.engine.GET("/usage-mode.html", s.serveUsageModePanel) next to
+management.html, handler gates on RemoteManagement.DisableControlPanel (404) and serves the
+embedded HTML unauthenticated. Vanilla-JS page: management key in localStorage sent as
+Authorization: Bearer, GET /v0/management/auth-files filtered to provider==claude, per-row
+shared/dedicated select -> PATCH /v0/management/auth-files/fields {name:id, claude_usage_mode}.
+exclusive normalized to dedicated for display; absent mode shown as shared; HTML-escaped labels;
+control reverts on PATCH failure. Commit 5265da59.
+
+Why embedded, not external. management.html is fetched+auto-overwritten from
+router-for-me/Cli-Proxy-API-Management-Center every ~3h; a companion control there cannot
+survive. Embedding in our binary on our own route sidesteps the updater entirely.
+
+Verification. Inline build (static asset; brief scoped OUT automated UI tests). Added a
+server-route gating guard (internal/api/usage_mode_panel_test.go, NOT a UI test): serves 200 +
+page marker + references the management endpoint when enabled; 404 when DisableControlPanel — a
+security-relevant guard (disabling the panel must disable all operator UI). Both green. Then a
+real HTTP smoke against a built binary + temp config: /usage-mode.html -> 200 with marker (proves
+route registration + embed serving, which the direct-handler unit test bypasses);
+/v0/management/auth-files -> 200 with Bearer key, 401 without. go build ./... + vet clean.
+
+Owed (ready-for-human). Browser round-trip: render, toggle a real account, confirm persist +
+that a blocked account flipped to dedicated starts serving. The API calls the page makes are
+already proven at the HTTP layer; only the in-browser interaction is unverified. Operator will
+do this on lab post-deploy.
+
+detect_changes. Not run — gitnexus MCP closed (-32000), index stale (2c6b493). Scope via git:
+server.go (embed var + 1 route + serveUsageModePanel), new usage-mode.html, new gating test.
+

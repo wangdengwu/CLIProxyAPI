@@ -13,3 +13,4 @@ out of the req:dev agent-executable set; handed to the operator after Task 2.
 <!-- ledger lines below, one per task, in the parseable format -->
 - Task 1: complete (commit 905b9677, review clean; inline TDD red→green: 4 behaviors, -race clean, package regression green; coverage adversary N/A — no real-world data)
 - Task 2: complete (commit 078abe3e, review clean; inline TDD red→green: 6 write/read behaviors + 1 regression guard, full management + auth packages green; coverage adversary skipped — CRUD over own schema, no real-world data distribution)
+- Task 3: complete (commit 5265da59, built + HTTP-smoke-verified: route serves 200 with page, auth-files API 200 with key / 401 without, gating 404 when panel disabled; browser round-trip verification owed to operator on lab — ready-for-human)
