@@ -539,6 +539,27 @@ func (a *Auth) ClaudeUsageMode() string {
 	return ""
 }
 
+// AvailableWindow returns the availability window declared for this auth, as the raw
+// "HH:MM-HH:MM" string. It prefers the synthesizer-populated attribute and falls back
+// to raw auth-file metadata, mirroring ClaudeUsageMode. Empty means no window, which
+// callers must treat as available all day.
+func (a *Auth) AvailableWindow() string {
+	if a == nil {
+		return ""
+	}
+	if a.Attributes != nil {
+		if v := strings.TrimSpace(a.Attributes[availabilityAttributeKey]); v != "" {
+			return v
+		}
+	}
+	if a.Metadata != nil {
+		if v, ok := a.Metadata[availabilityAttributeKey].(string); ok {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
 // ExpirationTime attempts to extract the credential expiration timestamp from metadata.
 // It inspects common keys such as "expired", "expire", "expires_at", and also
 // nested "token" objects to remain compatible with legacy auth file formats.

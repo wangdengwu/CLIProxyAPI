@@ -133,6 +133,14 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 		changes = append(changes, fmt.Sprintf("claude-ratelimit-alert.cooldown: %s -> %s", oldCfg.ClaudeRatelimitAlert.Cooldown, newCfg.ClaudeRatelimitAlert.Cooldown))
 	}
 
+	// Per-account availability windows
+	if oldCfg.AuthAvailability.Enabled != newCfg.AuthAvailability.Enabled {
+		changes = append(changes, fmt.Sprintf("auth-availability.enabled: %t -> %t", oldCfg.AuthAvailability.Enabled, newCfg.AuthAvailability.Enabled))
+	}
+	if oldCfg.AuthAvailability.Timezone != newCfg.AuthAvailability.Timezone {
+		changes = append(changes, fmt.Sprintf("auth-availability.timezone: %s -> %s", oldCfg.AuthAvailability.Timezone, newCfg.AuthAvailability.Timezone))
+	}
+
 	if oldCfg.Routing.Strategy != newCfg.Routing.Strategy {
 		changes = append(changes, fmt.Sprintf("routing.strategy: %s -> %s", oldCfg.Routing.Strategy, newCfg.Routing.Strategy))
 	}

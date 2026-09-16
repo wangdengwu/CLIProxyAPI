@@ -42,6 +42,9 @@ const (
 	blockReasonCooldown
 	blockReasonDisabled
 	blockReasonOther
+	// blockReasonWindowClosed means the auth is outside its declared availability
+	// window. Distinct from blockReasonOther so callers can report when it reopens.
+	blockReasonWindowClosed
 )
 
 // Default code and phrase for the model-cooldown flavour of the shared
@@ -407,6 +410,15 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 	}
 	if auth.Disabled || auth.Status == StatusDisabled {
 		return true, blockReasonDisabled, time.Time{}
+	}
+	// Availability window: the account's owner only shares it during certain hours.
+	// Checked before the rate-limit block because it depends on no runtime state at
+	// all — it is the cheapest possible short-circuit — but after Disabled, which is
+	// the stronger signal. Deliberately does NOT touch auth.Disabled: background token
+	// refresh keys on that flag, and disabling a closed account would let its
+	// credentials expire overnight, failing exactly when the window reopens.
+	if outsideAvailableWindow(auth, now) {
+		return true, blockReasonWindowClosed, time.Time{}
 	}
 	// Durable account-level rate-limit block (e.g. Claude's shared 5h budget). Checked
 	// first and independently of the aggregate Unavailable flag because that flag is

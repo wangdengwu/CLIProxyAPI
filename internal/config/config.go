@@ -92,6 +92,10 @@ type Config struct {
 	// utilization parsed from upstream Anthropic response headers.
 	ClaudeRatelimitAlert ClaudeRatelimitAlert `yaml:"claude-ratelimit-alert" json:"claude-ratelimit-alert"`
 
+	// AuthAvailability configures per-account availability windows, which keep an auth
+	// out of scheduling outside the hours its owner is willing to share it.
+	AuthAvailability AuthAvailability `yaml:"auth-availability" json:"auth-availability"`
+
 	// Routing controls credential selection behavior.
 	Routing RoutingConfig `yaml:"routing" json:"routing"`
 
@@ -219,6 +223,24 @@ type QuotaExceeded struct {
 	// When all free-tier auths are exhausted (429/503), the conductor retries with
 	// an auth that has available Google One AI credits.
 	AntigravityCredits bool `yaml:"antigravity-credits" json:"antigravity-credits"`
+}
+
+// AuthAvailability configures per-account availability windows.
+//
+// An auth may declare an available_window ("HH:MM-HH:MM", possibly crossing midnight)
+// in its auth file; outside that window the scheduler will not pick it. The feature is
+// provider-agnostic and usage-mode-agnostic: any auth that declares a window is subject
+// to it, and an auth without one is available all day.
+type AuthAvailability struct {
+	// Enabled is a kill switch. When false every window is ignored and all accounts
+	// return to all-day availability. Defaults to true.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// Timezone is the location the window's wall-clock times are anchored to.
+	// Defaults to Asia/Shanghai when empty or invalid — deliberately NOT the system
+	// local zone, which in a container is usually UTC and would silently shift an
+	// 18:00 window by eight hours.
+	Timezone string `yaml:"timezone" json:"timezone"`
 }
 
 // ClaudeRatelimitAlert configures the Claude unified rate-limit alert/block feature.
@@ -689,6 +711,8 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.ClaudeRatelimitAlert.Shared.NightStart = "19:00"
 	cfg.ClaudeRatelimitAlert.Shared.NightEnd = "05:00"
 	cfg.ClaudeRatelimitAlert.Cooldown = "5m"
+	cfg.AuthAvailability.Enabled = true
+	cfg.AuthAvailability.Timezone = "Asia/Shanghai"
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.

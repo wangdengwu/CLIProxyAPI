@@ -1013,3 +1013,69 @@ func TestFileSynthesizer_Synthesize_MultiProjectGeminiWithNote(t *testing.T) {
 		}
 	}
 }
+
+// TestFileSynthesizer_Synthesize_AvailableWindow pins that the operator-set
+// available_window key is carried from the auth file into Attributes, where the
+// scheduler's availability gate reads it. Unlike claude_usage_mode the value is NOT
+// lowercased — it is digits and a separator, and normalizing it would only risk
+// mangling a string the gate parses itself.
+func TestFileSynthesizer_Synthesize_AvailableWindow(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  any
+		want string
+		ok   bool
+	}{
+		{name: "overnight window", raw: "18:00-09:00", want: "18:00-09:00", ok: true},
+		{name: "same-day window", raw: "09:00-18:00", want: "09:00-18:00", ok: true},
+		{name: "surrounding whitespace is trimmed", raw: "  18:00-09:00  ", want: "18:00-09:00", ok: true},
+		{name: "malformed value is still carried through for the gate to reject", raw: "6pm-9am", want: "6pm-9am", ok: true},
+		{name: "empty string is dropped", raw: "", want: "", ok: false},
+		{name: "blank string is dropped", raw: "   ", want: "", ok: false},
+		{name: "non-string is ignored", raw: 1800, want: "", ok: false},
+		{name: "missing", raw: nil, want: "", ok: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			authData := map[string]any{"type": "claude"}
+			if tt.raw != nil {
+				authData["available_window"] = tt.raw
+			}
+			data, errWrite := json.Marshal(authData)
+			if errWrite != nil {
+				t.Fatalf("marshal: %v", errWrite)
+			}
+			tempDir := t.TempDir()
+			if errWriteFile := os.WriteFile(filepath.Join(tempDir, "auth.json"), data, 0644); errWriteFile != nil {
+				t.Fatalf("write file: %v", errWriteFile)
+			}
+
+			synth := NewFileSynthesizer()
+			ctx := &SynthesisContext{
+				Config:      &config.Config{},
+				AuthDir:     tempDir,
+				Now:         time.Now(),
+				IDGenerator: NewStableIDGenerator(),
+			}
+			auths, errSynth := synth.Synthesize(ctx)
+			if errSynth != nil {
+				t.Fatalf("Synthesize: %v", errSynth)
+			}
+			if len(auths) != 1 {
+				t.Fatalf("expected 1 auth, got %d", len(auths))
+			}
+
+			value, exists := auths[0].Attributes["available_window"]
+			if tt.ok {
+				if !exists || value != tt.want {
+					t.Fatalf("available_window = %q, exists=%v; want %q", value, exists, tt.want)
+				}
+				return
+			}
+			if exists {
+				t.Fatalf("expected available_window to be absent, got %q", value)
+			}
+		})
+	}
+}

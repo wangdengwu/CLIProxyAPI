@@ -379,6 +379,10 @@ func (m *Manager) SetConfig(cfg *internalconfig.Config) {
 	}
 	m.runtimeConfig.Store(cfg)
 	m.rebuildAPIKeyModelAliasFromRuntimeConfig()
+	// Resolve the availability window snapshot here, once per reload: the selection
+	// path cannot take config as a parameter, and loading a timezone touches the
+	// filesystem so it must never happen per pick.
+	setAvailabilityConfig(cfg)
 }
 
 func (m *Manager) lookupAPIKeyUpstreamModel(authID, requestedModel string) string {

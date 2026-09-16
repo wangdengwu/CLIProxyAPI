@@ -166,6 +166,18 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 			}
 		}
 	}
+	// Read the per-account availability window ("HH:MM-HH:MM", possibly crossing
+	// midnight) from the auth file. The scheduler's availability gate parses and
+	// validates it; carry the value through verbatim (trimmed only) so a malformed
+	// string reaches the gate, which logs it and fails open, rather than being
+	// silently reshaped here.
+	if rawWindow, ok := metadata["available_window"]; ok {
+		if window, isStr := rawWindow.(string); isStr {
+			if trimmed := strings.TrimSpace(window); trimmed != "" {
+				a.Attributes["available_window"] = trimmed
+			}
+		}
+	}
 	coreauth.ApplyCustomHeadersFromMetadata(a)
 	ApplyAuthExcludedModelsMeta(a, cfg, perAccountExcluded, "oauth")
 	// For codex auth files, extract plan_type from the JWT id_token.
