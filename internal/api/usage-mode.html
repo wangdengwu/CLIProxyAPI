@@ -44,6 +44,8 @@
   .badge.shared { color: var(--shared); background: rgba(95,191,143,.12); }
   .badge.dedicated { color: var(--ded); background: rgba(240,163,94,.14); }
   select { background: var(--panel-2); border: 1px solid var(--line); color: var(--ink); border-radius: 8px; padding: 7px 9px; font-size: 13px; }
+  input.win { background: var(--panel-2); border: 1px solid var(--line); color: var(--ink); border-radius: 8px; padding: 7px 9px; font-size: 13px; width: 122px; font-variant-numeric: tabular-nums; }
+  input.win:disabled { opacity: .55; }
   .msg { margin-top: 12px; font-size: 13px; min-height: 18px; }
   .msg.err { color: var(--err); }
   .msg.ok { color: var(--ok); }
@@ -189,6 +191,14 @@
     if (r === "rate_limit_error") { return "rate limited"; }
     return r || "unavailable";
   }
+
+  // windowValue normalizes the API's available_window into a string safe to drop into
+  // an input's value. The field is omitted entirely for accounts without a window, so
+  // undefined/null/non-string must all become "" — never the literal "undefined".
+  function windowValue(raw) {
+    if (typeof raw !== "string") { return ""; }
+    return raw.trim();
+  }
   // ---- pure:end ----
 
   function usageCell(win, nowMs) {
@@ -204,6 +214,16 @@
 
   function loadButton(idAttr, label) {
     return '<button class="mini" data-load="' + idAttr + '">' + (label || "Load") + '</button>';
+  }
+
+  // windowCell renders the editable availability window. One text box rather than two
+  // time controls: an overnight window like 18:00-09:00 reads as ONE span, and two
+  // separate controls invite reading it as two unrelated fields.
+  function windowCell(idAttr, raw) {
+    var value = escapeHtml(windowValue(raw));
+    return '<input class="win" type="text" spellcheck="false" autocomplete="off"' +
+      ' data-window="' + idAttr + '" data-current="' + value + '" value="' + value + '"' +
+      ' placeholder="all day" title="e.g. 18:00-09:00 — empty means all day">';
   }
 
   function render(entries) {
@@ -239,10 +259,11 @@
           : '<td class="usage"><span class="na">—</span></td><td class="usage"></td>') +
         '<td>' + badge + '</td>' +
         '<td>' + sel + '</td>' +
+        '<td class="window">' + windowCell(idAttr, e.available_window) + '</td>' +
       '</tr>';
     }).join("");
     host.innerHTML =
-      '<table><thead><tr><th>Account</th><th>5h</th><th>7d</th><th>Current</th><th>Set to</th></tr></thead>' +
+      '<table><thead><tr><th>Account</th><th>5h</th><th>7d</th><th>Current</th><th>Set to</th><th>Window</th></tr></thead>' +
       '<tbody>' + rows + '</tbody></table>';
 
     Array.prototype.forEach.call(host.querySelectorAll("select"), function (s) {
@@ -354,10 +375,49 @@
       });
   }
 
+  function onWindowChange(input) {
+    var id = decodeURIComponent(input.getAttribute("data-window"));
+    var current = input.getAttribute("data-current") || "";
+    var next = (input.value || "").trim();
+    if (next === current) { return; }
+    input.disabled = true;
+    setMsg("Updating " + id + " window…");
+    fetch("/v0/management/auth-files/fields", {
+      method: "PATCH",
+      headers: headers(),
+      body: JSON.stringify({ name: id, available_window: next })
+    })
+      .then(function (r) {
+        if (r.status === 401 || r.status === 403) { throw new Error("Unauthorized — check the management key."); }
+        if (!r.ok) {
+          return r.json().catch(function () { return {}; }).then(function (b) {
+            throw new Error(b.error || ("Update failed (HTTP " + r.status + ")."));
+          });
+        }
+        return r.json().catch(function () { return {}; });
+      })
+      .then(function () {
+        setMsg(id + (next ? " window set to " + next + "." : " window cleared — available all day."), "ok");
+        loadAccounts();
+      })
+      .catch(function (err) {
+        setMsg(err.message || String(err), "err");
+        input.value = current; // revert the control on failure
+        input.disabled = false;
+      });
+  }
+
   // Delegated so on-demand Load/retry buttons work across re-renders.
   host.addEventListener("click", function (e) {
     var b = e.target.closest ? e.target.closest("[data-load]") : null;
     if (b) { fetchUsage(decodeURIComponent(b.getAttribute("data-load"))); }
+  });
+
+  // Delegated too: the window inputs are rebuilt on every render, and change fires on
+  // blur as well as Enter.
+  host.addEventListener("change", function (e) {
+    var t = e.target;
+    if (t && t.getAttribute && t.getAttribute("data-window") != null) { onWindowChange(t); }
   });
 
   loadBtn.addEventListener("click", loadAccounts);

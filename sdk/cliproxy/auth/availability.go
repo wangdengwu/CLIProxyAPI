@@ -111,6 +111,20 @@ func parseAvailabilityWindow(raw string) (availabilityWindow, bool) {
 // value "24:00" resolves to.
 const minutesPerDay = 24 * 60
 
+// ValidAvailabilityWindow reports whether raw is a window this package will honour.
+//
+// Exported so the management write path validates with the exact same parser the
+// scheduler gates on. Two parsers would eventually disagree about a value like
+// "18:00-18:00", and the UI would report success for a window the gate ignores.
+// A blank string is valid and means "no window" (all-day availability).
+func ValidAvailabilityWindow(raw string) bool {
+	if strings.TrimSpace(raw) == "" {
+		return true
+	}
+	_, ok := parseAvailabilityWindow(raw)
+	return ok
+}
+
 // parseAvailabilityMinute parses "HH:MM" into minutes since midnight.
 //
 // Accepts "24:00" as end-of-day (1440). "18:00-24:00" is the natural way to write

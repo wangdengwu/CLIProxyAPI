@@ -481,6 +481,11 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 			}
 		}
 	}
+	// Expose the raw availability window so the companion page can prefill its input.
+	// Absent key -> field omitted; clients treat absence as all-day availability.
+	if window := auth.AvailableWindow(); window != "" {
+		entry["available_window"] = window
+	}
 	return entry
 }
 
@@ -1152,6 +1157,7 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		Priority        *int              `json:"priority"`
 		Note            *string           `json:"note"`
 		ClaudeUsageMode *string           `json:"claude_usage_mode"`
+		AvailableWindow *string           `json:"available_window"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
@@ -1343,6 +1349,35 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid claude_usage_mode (want shared or dedicated)"})
 			return
 		}
+	}
+	if req.AvailableWindow != nil {
+		trimmedWindow := strings.TrimSpace(*req.AvailableWindow)
+		// Validate with the scheduler's own parser. At runtime an unreadable window
+		// fails open, so this 400 is the only thing standing between a typo and an
+		// operator who believes a restriction is in force while the account keeps
+		// serving around the clock.
+		if !coreauth.ValidAvailabilityWindow(trimmedWindow) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid available_window (want HH:MM-HH:MM, e.g. 18:00-09:00)"})
+			return
+		}
+		if targetAuth.Metadata == nil {
+			targetAuth.Metadata = make(map[string]any)
+		}
+		if targetAuth.Attributes == nil {
+			targetAuth.Attributes = make(map[string]string)
+		}
+		if trimmedWindow == "" {
+			// Empty-value-deletes, matching how priority/note are cleared. The account
+			// returns to all-day availability.
+			delete(targetAuth.Metadata, "available_window")
+			delete(targetAuth.Attributes, "available_window")
+		} else {
+			// Metadata is the on-disk source of truth; Attributes is the in-memory
+			// mirror the availability gate reads first.
+			targetAuth.Metadata["available_window"] = trimmedWindow
+			targetAuth.Attributes["available_window"] = trimmedWindow
+		}
+		changed = true
 	}
 
 	if !changed {
