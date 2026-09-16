@@ -478,3 +478,30 @@ getHours）并做变异检查确认能抓到 —— 否则它只是注释里的�
 Owed。lab 上一次浏览器确认（徽章与实际调度行为一致）。这是全 PRD 唯一剩余的人工验证。
 另：JS 运行时行为仍未经执行验证（node 不在 allowlist，见 Task 4 记录），只验证了源码形状 +
 markup。若要补，需先把 Bash(node:*) 加进 .claude/settings.json 的 allowlist。
+
+## 2026-09-16 · task-complete · Deploy v2026.9.16（账号可用时间段）
+ff-merge feat/auth-availability-window -> main（336468fe..b2a6d49f，13 commits），已 push；
+tag v2026.9.16 on b2a6d49f -> Action docker-image（run 35058859010，success）构建并推送
+multi-arch wangdengwu/cli-proxy-api:v2026.9.16（amd64 1m6s / arm64 55s / manifest 23s）。
+lab dengwu.wang-local-lab ns gemini 经 kubectl set image 部署（原先干净地停在 v2026.8.18），
+rollout 正常。
+
+已验证。Pod Running，启动日志 Version: v2026.9.16, Commit: b2a6d49；/healthz ok；in-pod
+取 /usage-mode.html 确认新元素全部就位（<th>Window</th>、data-window、
+available_window: next、windowBadge(availableNow, nextOpenAt)、function wallClockOf(iso)、
+placeholder="all day"），既有元素未丢（claude_usage_mode: next、<th>5h</th>、data-load）；
+/v0/management/auth-files 无 key 返回 401（端点受保护）。
+
+未在 lab 验证。带鉴权的 auth-files 响应体（available_now / next_open_at 实际取值）——
+管理密钥经 k8s secret 注入，pod 内 config.yaml 与环境变量均不可读，不去读取 secret；
+运营者的浏览器往返会覆盖这一步。
+
+启动日志两条 warn，均与本次无关：
+1) 拉取 management release 信息 403 GitHub API rate limit（IP 级限流，既有现象）。
+2) 某账号 Token refresh 失败 invalid_grant / "Refresh token expired" —— 是该账号的
+refresh token 真的过期了，需要重新绑定。**反而是正面信号**：证明后台刷新在正常跑，
+与本次「窗口外账号仍须刷新 token」的红线一致（窗口逻辑不触碰 Disabled、不影响
+shouldRefresh，已有直接证据测试）。
+
+Owed。运营者浏览器往返：给某账号填一个当下必然关门的窗口（如 12:00 时填 18:00-09:00），
+确认徽章显示 closed + 下次开门时刻、该账号不再被选中；再清空恢复全天。
