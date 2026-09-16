@@ -393,3 +393,37 @@ warning 日志用 logrus test hook 断言（fail-open 静默，日志是运营�
 Owed。Task 3-5。Task 3 的工作量已由 Task 1 的影响分析确认：blockReason 分类点有 4 处
 （selector.go:210、conductor.go:626、scheduler.go:696/742），都要认 blockReasonWindowClosed，
 否则对应路径拿不到带时间的错误。
+
+## 2026-09-16 · task-complete · Task 3 全关门时返回带下次开门时间的 429
+全部账号关门 → 429 + Retry-After + reset_seconds，错误码 auth_window_closed，文案区别于模型
+冷却。commit 2dcabb71。
+
+**最重要的发现：scheduler 才是生产路径，差点做成无效功能。**
+useSchedulerFastPath() = scheduler != nil && isBuiltInSelector(selector)，而 NewManager 默认
+两者都成立 —— 真实流量不走 getAvailableAuths / availableAuthsForRouteModel，走 scheduler。
+按原 brief 只改前两处分类点，这个错误在生产中永远不会出现，而所有单测都会是绿的（因为单测
+直接调 getAvailableAuths）。教训：**改"错误怎么报"这类事情前，先确认哪条代码路径承载真实流量**；
+Task 1 的 impact 分析给出了 4 个调用点，但"哪个是默认路径"要另外查 dispatch 条件。
+
+scheduler 不直接消费 blockReason，而是映射成实体状态（Ready/Cooldown/Disabled/Blocked）再按状态
+计数。新增第五态 scheduledStateWindowClosed：带 nextRetryAt、进 blocked 索引，于是既有的
+promoteExpiredLocked（到点重新评估）在窗口开门时自动提升它 —— 不需要任何新的定时机制。这是
+一个意外的好契合：窗口的"下次开门"与冷却的"下次重试"在状态机里是同一个概念。
+
+四处分类点统一走 blockReason.recoverable() 谓词而非各写一遍相等比较。错误选择逻辑收敛成
+recoverableSummary（observe/merge/unavailableError），selector、conductor、scheduler 三条路径
+共用一份，不会再漂移。
+
+DST。nextOpenAt 用 time.Date 按目标时区的日历日期构造。测试用 America/New_York 春季跳变日
+做了真实断言：次日 10:00 距前日 13:00 是 20 小时而非 24，固定加法会报晚一小时。上海当前无
+DST，但 timezone 是运营者可配的。
+
+混合因由的取舍。window + cooldown → 报 cooldown（较保守：避免让运营者去查排班配置，而真正
+问题是上游限流）。window + 限流拦截（blockReasonOther，本就不带恢复时间）→ 仍退化成无时间
+错误，这是既有缺陷，已加测试把边界固定下来而不是留给事故现场去发现。
+
+测试时钟约束。scheduler.rebuild 用真实时钟评估状态，无法注入 now。解法：按当前真实时刻 ±60
+分钟构造"必然关门"/"必然开门"的窗口，任何时刻跑都确定。精确的时刻算术另用纯函数 nextOpenAt
+注入 now 来测。
+
+Owed。Task 4（伴随页编辑窗口）、Task 5（开/关徽章 + lab 浏览器确认）。
