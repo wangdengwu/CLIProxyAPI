@@ -16,3 +16,10 @@ auth 文件里由运营者（而非 OAuth 流程）设定的顶层键，表达�
 
 取值形态不做规范化，读写都按原样透传：`priority` 可能是 JSON number 也可能是 string（合成器两种都接），`headers` 是嵌套对象，`excluded_models` 是数组。
 
+**Available-window**:
+auth 文件的顶层运营者键 `available_window`，声明该账号愿意参与调度的时段，格式 `"HH:MM-HH:MM"`。缺失或空串表示全天可用（绝大多数账号如此）。
+
+语义：**左闭右开**（`18:00-09:00` 在 18:00 整开门、09:00 整关门）；`start > end` 表示跨午夜；`24:00` 表示当日终点；`start == end` 语义歧义，判为非法。锚定时区由全局配置 `auth-availability.timezone` 决定（默认 `Asia/Shanghai`，刻意不回落系统本地时区 —— 容器里通常是 UTC，会把 18:00 静默偏移八小时）。`auth-availability.enabled` 是 kill switch，关掉则所有窗口失效、全部账号回到全天可用。
+
+**provider 无关、usage-mode 无关**：任何账号配了窗口就生效，不检查它是不是 Claude、是不是 shared。窗口外该账号对调度器完全不可见（硬门禁），但仍正常刷新 token。属 Operator-set-keys 家族，因此跨重新登录自动保留。运营者在 `/usage-mode.html` 编辑，该页同时显示服务端算好的 open/closed 徽章与下次开门时刻。
+

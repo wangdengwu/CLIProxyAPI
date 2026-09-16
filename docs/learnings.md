@@ -40,14 +40,23 @@ Postgres 后端（生产与 lab 实际运行的那个）并不是「只写数据
 
 ## claude-shared-ratelimit-defaults-live-in-two-sources
 
-Claude「shared」限流策略的默认值有**两处代码来源**,改一处必须同步另一处,否则全新安装与从空/nil config 解析出的策略会不一致:
+策略类默认值往往有**两处代码来源**（配置层 + 运行时回退）,改一处必须同步另一处,否则全新安装与从空/nil config 解析出的策略会不一致。这个形状在本仓至少出现两次:
+
+**Claude shared 限流策略**:
 
 - `internal/config/config.go` 的 `SetDefaults` —— 配置层默认(config 层单测走这条)。
 - `internal/runtime/executor/helps/ratelimit_policy.go` 的 `defaultClaudeSharedRatelimitPolicy` —— 策略层回退,policy 从空/nil config 解析时用它(block 路径单测 `sharedPolicyForMode("shared", nil)` 走这条)。
 
 外加 `config.example.yaml` 的 `claude-ratelimit-alert.shared` 段是文档来源,也要对齐。生产 configmap 通常不写这些键(靠默认值),所以改代码默认即在生产生效。
 
-配套陷阱:7 天 guard 的单测把 day base 硬编进了期望值公式(形如 `base * ((hardCap-used)/(hardCap-soft))`)。改 base 要手工重算该期望值,不能对字面量做全局替换 —— 公式里还有个数值相同的量是 7d used 输入,替换会算错。
+**账号可用时间段**（同一形状）:
+
+- `internal/config/config.go` 的 `SetDefaults` —— `auth-availability.enabled/timezone`。
+- `sdk/cliproxy/auth/availability.go` 的 `defaultAvailabilitySnapshot` —— 配置尚未加载时的快照初值。
+
+配套陷阱一:7 天 guard 的单测把 day base 硬编进了期望值公式(形如 `base * ((hardCap-used)/(hardCap-soft))`)。改 base 要手工重算该期望值,不能对字面量做全局替换 —— 公式里还有个数值相同的量是 7d used 输入,替换会算错。
+
+配套陷阱二:**bool 配置项的零值是 false,而默认值往往是 true**。加载器靠「unmarshal 前先设默认」实现,所以只有经加载器产生的 config 才带默认值 —— 手工构造的 `&config.Config{}`(例如 `NewManager` 的初始化)拿到的是 false。设计时让零值 false 落在**安全**的一侧(对开关类特性即「功能关闭」= 不拦截),这样配置加载前的窗口期天然无害;测试里也别拿 `&Config{}` 当「默认配置」用。
 
 ## istio-manifest-drifts-from-live-cluster
 
@@ -72,4 +81,38 @@ gitnexus MCP 工具突然全部返回 `-32000: Connection closed`（常伴随 'i
 Fallback：CLI 与 MCP 共用同一个 LocalBackend，MCP 路径抽风时 CLI 子命令照常可用 —— `gitnexus <tool> --repo <name>`（如 detect-changes/query；多 repo 注册时**必须**带 --repo，否则快速报 'Multiple repositories indexed'）。
 
 预防：别中途打断 analyze/索引，也留意会触发它的 PreToolUse/PostToolUse gitnexus 钩子 —— 半途被杀正是 wedged 成因。MCP server 在会话启动时才拉起，重建索引后需**重启会话**才生效。
+
+## hard-gate-must-fail-open-and-parse-leniently
+
+凡是「把凭证挡在调度之外」的硬门禁，运行时一律 fail-open，且解析器的宽容度本身是安全属性。
+
+硬门禁的每一次误判都是**静默摘号**：账号从池子里消失，没有报错、没有告警，只有容量莫名变少。所以运行时遇到任何拿不准的情况都要放行 —— 功能开关关闭、字段为空、字符串解析失败，全都放行并打 warning 日志。拦截写错的值是**写入侧**（管理 API 返回 400）的责任，不是运行时的。
+
+但 fail-open 有个不直观的后果：**解析器过严会变成静默的功能失效**。运营者写了 `18:00-24:00`，解析器判它越界 → fail-open → 账号全天接流量，而运营者以为自己设了限制。这比直接拒绝更危险。所以凡是意图无歧义的写法都必须接受：宽松空白（`18:00 - 09:00`）、不补零（`9:00-18:00`）、`24:00` 表示当日终点。宽容度不是易用性问题，是安全属性。
+
+配套：fail-open 路径必须有 warning 日志（静默放行时它是运营者唯一的线索），且日志要带上账号标识与那个读不懂的原值。测这类逻辑时做一次变异检查（把 fail-open 改成 fail-closed，确认断言真的变红）—— 恒真的 fail-open 断言毫无价值。
+
+## scheduler-is-the-production-pick-path
+
+真实流量走 scheduler，不走 `getAvailableAuths`/`availableAuthsForRouteModel`；候选收集逻辑有四处近似重复。
+
+`useSchedulerFastPath()` 的条件是「scheduler 存在且 selector 是内置的」，而 `NewManager` 默认两者都成立 —— 所以生产路径是 `authScheduler`，legacy 路径只在自定义 selector 时才走。改「不可用时报什么错」这类事情，只改 selector/conductor 是改不到生产的，而所有直接调 `getAvailableAuths` 的单测都会是绿的。
+
+`isAuthBlockedForModel` 是唯一的判定收口（6 个调用点都经过它），所以**加一种新的拦截原因**只需改它一处。但**消费拦截原因**的分类点有四处，漏掉任何一处那条路径就静默退化：
+
+- `selector.go` 的 `collectAvailableByPriority`
+- `conductor.go` 的 `availableAuthsForRouteModel`（是前者的近似拷贝，同 ADR 0001 的形状）
+- `scheduler.go` 的两处状态转换 switch（upsert 与 `promoteExpiredLocked`）
+
+scheduler 不直接消费 reason，而是映射成实体状态（Ready/Cooldown/Disabled/Blocked/…）再按状态汇总。新增一种「暂时不可用但知道何时恢复」的原因时，给它一个独立状态、带上 nextRetryAt、并放进 blocked 索引 —— 既有的 `promoteExpiredLocked` 会在到点时自动重新评估，不需要任何新的定时机制。分类判断统一走 `blockReason` 上的谓词方法，别在四处各写一遍相等比较。
+
+## disabled-flag-is-consumed-by-token-refresh
+
+别用 `auth.Disabled` 表达「暂时不接流量」—— 后台 token 刷新只看这个标志。
+
+`Manager.shouldRefresh` 的第一条判断就是 `a.Disabled` 直接返回 false，它不走 `isAuthBlockedForModel`。所以用 Disabled 实现任何临时性的不可用（时间段、维护窗口、人工暂停），该账号在此期间**不会刷新 token**，凭证过期后在恢复的那一刻失败 —— 功能在最不该失败的时刻失败，且现象（「恢复后反而 401」）离根因很远。
+
+临时不可用一律加在 `isAuthBlockedForModel` 里：它是所有调度路径的唯一过滤收口，只影响选号，不影响后台维护。`Disabled` 留给运营者显式停用。
+
+验证这条红线时用直接证据而非代码推断：断言「被拦账号与未被拦账号的 `shouldRefresh` 结果一致」，比断言「Disabled 字段没被改」更能说明独立性。
 
