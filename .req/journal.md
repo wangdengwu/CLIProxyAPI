@@ -451,3 +451,30 @@ git status|diff|add|log|show 是稳定可用的。写文件一律走 Write/Edit 
 预先存在、与本次无关：internal/api/server.go 的 gofmt 违规（HEAD 版本即违规，未触碰）。
 
 Owed。Task 5（服务端下发 available_now/next_open_at + 开关徽章 + lab 浏览器确认）。
+
+## 2026-09-16 · task-complete · Task 5 服务端下发开/关状态 + 徽章
+每行显示 open/closed 徽章，关着的一并显示下次开门时刻。ListAuthFiles 新增 available_now
+（恒存在）与 next_open_at（开门时省略，带时区偏移）。commit 2d32e6fe。
+
+**状态必须服务端算。** 窗口锚定服务端配置时区，浏览器时区任意 —— 前端自算会给出一个看起来
+完全合理的错误答案，没人会发现。这类"错得很像对"的失败是最该用架构（而非测试）消除的。
+
+新导出 AvailabilityStatus 与门禁共用 outsideAvailableWindow。加了一个"逐时刻比对
+AvailabilityStatus 与 isAuthBlockedForModel"的测试：徽章与真实调度决策若不一致，运营者排查
+"这个号为什么闲着"时无从判断谁在说谎。共用实现 + 一致性测试，比两处各自正确更可靠。
+
+时刻展示用正则取 HH:MM 而非 Date。交给 Date 会在浏览器时区重新解释瞬间，打印出与旁边徽章
+自相矛盾的时间。把这条约束写成了断言（禁用 new Date / Date.parse / toLocaleTimeString /
+getHours）并做变异检查确认能抓到 —— 否则它只是注释里的一句愿望。
+
+**测试放置的一个取舍**：最初为了在管理端测 kill switch，我写了 TestOnlySetAvailabilityEnabled
+和 TestOnlyWindowStartingIn 两个生产包导出。这是在污染生产 API。改为：kill switch / nil /
+非法窗口这些调度层语义放 sdk 层测（那里能直接操作包级快照），管理端只测字段接线。
+教训：需要往生产包加 TestOnly* 导出时，通常说明这个测试放错了层。
+
+降级路径全部覆盖：available_now 缺失（老服务端）→ 不显示徽章而非编造判定；windowStatus 的
+类型守卫必须早于真值判断，否则字段缺失读成 closed —— 已加断言固定顺序。
+
+Owed。lab 上一次浏览器确认（徽章与实际调度行为一致）。这是全 PRD 唯一剩余的人工验证。
+另：JS 运行时行为仍未经执行验证（node 不在 allowlist，见 Task 4 记录），只验证了源码形状 +
+markup。若要补，需先把 Bash(node:*) 加进 .claude/settings.json 的 allowlist。
