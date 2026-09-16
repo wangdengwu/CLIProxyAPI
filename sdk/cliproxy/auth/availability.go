@@ -151,29 +151,60 @@ func (w availabilityWindow) contains(minuteOfDay int) bool {
 	return minuteOfDay >= w.startMinute && minuteOfDay < w.endMinute
 }
 
+// Code and phrase for the "every account is off the clock" flavour of the shared
+// unavailability 429. Distinct from model cooldown so an operator reading the error
+// can tell "everyone is rate-limited" from "everyone is outside their hours".
+const (
+	availabilityWindowErrorCode   = "auth_window_closed"
+	availabilityWindowErrorPhrase = "are outside their availability window"
+)
+
+// newAvailabilityWindowError builds the 429 returned when every candidate is closed.
+func newAvailabilityWindowError(model, provider string, resetIn time.Duration) *modelCooldownError {
+	return newUnavailabilityError(availabilityWindowErrorCode, availabilityWindowErrorPhrase, model, provider, resetIn)
+}
+
+// nextOpenAt returns the next instant this window opens, at or after now.
+//
+// The instant is constructed by calendar date in the target zone rather than by adding
+// a fixed number of hours to now: a DST transition day is not 24 hours long, and while
+// Asia/Shanghai has no DST today the timezone is operator-configurable. Passing the
+// start as a minute offset also lets time.Date normalize 24:00 into the next midnight.
+func (w availabilityWindow) nextOpenAt(loc *time.Location, now time.Time) time.Time {
+	local := now.In(loc)
+	candidate := time.Date(local.Year(), local.Month(), local.Day(), 0, w.startMinute, 0, 0, loc)
+	if !candidate.After(local) {
+		candidate = time.Date(local.Year(), local.Month(), local.Day()+1, 0, w.startMinute, 0, 0, loc)
+	}
+	return candidate
+}
+
 // outsideAvailableWindow reports whether auth is currently outside its declared
-// availability window.
+// availability window, and when that window next opens.
 //
 // Every uncertain path deliberately fails OPEN (returns false). A hard gate's every
 // misjudgement silently removes an account from the pool, so at runtime the bias is
 // always toward letting traffic through; rejecting typos is the write path's job.
-func outsideAvailableWindow(auth *Auth, now time.Time) bool {
+func outsideAvailableWindow(auth *Auth, now time.Time) (bool, time.Time) {
 	if auth == nil {
-		return false
+		return false, time.Time{}
 	}
 	snapshot := currentAvailabilitySnapshot()
 	if !snapshot.enabled {
-		return false
+		return false, time.Time{}
 	}
 	raw := auth.AvailableWindow()
 	if raw == "" {
-		return false
+		return false, time.Time{}
 	}
 	window, ok := parseAvailabilityWindow(raw)
 	if !ok {
 		log.Warnf("auth-availability: auth %s has unparseable available_window %q; treating as available all day", auth.ID, raw)
-		return false
+		return false, time.Time{}
 	}
 	local := now.In(snapshot.location)
-	return !window.contains(local.Hour()*60 + local.Minute())
+	if window.contains(local.Hour()*60 + local.Minute()) {
+		return false, time.Time{}
+	}
+	return true, window.nextOpenAt(snapshot.location, now)
 }

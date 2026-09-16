@@ -617,8 +617,7 @@ func (m *Manager) availableAuthsForRouteModel(auths []*Auth, provider, routeMode
 	}
 
 	availableByPriority := make(map[int][]*Auth)
-	cooldownCount := 0
-	var earliest time.Time
+	var summary recoverableSummary
 	for _, candidate := range auths {
 		checkModel := m.selectionModelForAuth(candidate, routeModel)
 		blocked, reason, next := isAuthBlockedForModel(candidate, checkModel, now)
@@ -627,27 +626,11 @@ func (m *Manager) availableAuthsForRouteModel(auths []*Auth, provider, routeMode
 			availableByPriority[priority] = append(availableByPriority[priority], candidate)
 			continue
 		}
-		if reason == blockReasonCooldown {
-			cooldownCount++
-			if !next.IsZero() && (earliest.IsZero() || next.Before(earliest)) {
-				earliest = next
-			}
-		}
+		summary.observe(reason, next)
 	}
 
 	if len(availableByPriority) == 0 {
-		if cooldownCount == len(auths) && !earliest.IsZero() {
-			providerForError := provider
-			if providerForError == "mixed" {
-				providerForError = ""
-			}
-			resetIn := earliest.Sub(now)
-			if resetIn < 0 {
-				resetIn = 0
-			}
-			return nil, newModelCooldownError(routeModel, providerForError, resetIn)
-		}
-		return nil, &Error{Code: "auth_unavailable", Message: "no auth available"}
+		return nil, summary.unavailableError(len(auths), provider, routeModel, now)
 	}
 
 	bestPriority := 0

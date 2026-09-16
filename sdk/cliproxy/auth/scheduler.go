@@ -28,6 +28,11 @@ const (
 	scheduledStateCooldown
 	scheduledStateBlocked
 	scheduledStateDisabled
+	// scheduledStateWindowClosed is a recoverable state like cooldown — it carries a
+	// nextRetryAt and is promoted automatically once that passes — but is tracked
+	// separately so the unavailability error can say the accounts are off the clock
+	// rather than rate-limited.
+	scheduledStateWindowClosed
 )
 
 // authScheduler keeps the incremental provider/model scheduling state used by Manager.
@@ -431,8 +436,7 @@ func (s *authScheduler) pickMixed(ctx context.Context, providers []string, model
 func (s *authScheduler) mixedUnavailableErrorLocked(providers []string, model string, tried map[string]struct{}) error {
 	now := time.Now()
 	total := 0
-	cooldownCount := 0
-	earliest := time.Time{}
+	var summary recoverableSummary
 	for _, providerKey := range providers {
 		providerState := s.providers[providerKey]
 		if providerState == nil {
@@ -442,24 +446,14 @@ func (s *authScheduler) mixedUnavailableErrorLocked(providers []string, model st
 		if shard == nil {
 			continue
 		}
-		localTotal, localCooldownCount, localEarliest := shard.availabilitySummaryLocked(triedPredicate(tried))
+		localTotal, localSummary := shard.availabilitySummaryLocked(triedPredicate(tried))
 		total += localTotal
-		cooldownCount += localCooldownCount
-		if !localEarliest.IsZero() && (earliest.IsZero() || localEarliest.Before(earliest)) {
-			earliest = localEarliest
-		}
+		summary.merge(localSummary)
 	}
 	if total == 0 {
 		return &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	if cooldownCount == total && !earliest.IsZero() {
-		resetIn := earliest.Sub(now)
-		if resetIn < 0 {
-			resetIn = 0
-		}
-		return newModelCooldownError(model, "", resetIn)
-	}
-	return &Error{Code: "auth_unavailable", Message: "no auth available"}
+	return summary.unavailableError(total, "mixed", model, now)
 }
 
 // triedPredicate builds a filter that excludes auths already attempted for the current request.
@@ -696,6 +690,9 @@ func (m *modelScheduler) upsertEntryLocked(meta *scheduledAuthMeta, now time.Tim
 	case reason == blockReasonCooldown:
 		entry.state = scheduledStateCooldown
 		entry.nextRetryAt = next
+	case reason == blockReasonWindowClosed:
+		entry.state = scheduledStateWindowClosed
+		entry.nextRetryAt = next
 	case reason == blockReasonDisabled:
 		entry.state = scheduledStateDisabled
 	default:
@@ -741,6 +738,9 @@ func (m *modelScheduler) promoteExpiredLocked(now time.Time) {
 			entry.nextRetryAt = time.Time{}
 		case reason == blockReasonCooldown:
 			entry.state = scheduledStateCooldown
+			entry.nextRetryAt = next
+		case reason == blockReasonWindowClosed:
+			entry.state = scheduledStateWindowClosed
 			entry.nextRetryAt = next
 		case reason == blockReasonDisabled:
 			entry.state = scheduledStateDisabled
@@ -843,32 +843,21 @@ func (m *modelScheduler) readyCountAtPriorityLocked(preferWebsocket bool, priori
 // unavailableErrorLocked returns the correct unavailable or cooldown error for the shard.
 func (m *modelScheduler) unavailableErrorLocked(provider, model string, predicate func(*scheduledAuth) bool) error {
 	now := time.Now()
-	total, cooldownCount, earliest := m.availabilitySummaryLocked(predicate)
+	total, summary := m.availabilitySummaryLocked(predicate)
 	if total == 0 {
 		return &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	if cooldownCount == total && !earliest.IsZero() {
-		providerForError := provider
-		if providerForError == "mixed" {
-			providerForError = ""
-		}
-		resetIn := earliest.Sub(now)
-		if resetIn < 0 {
-			resetIn = 0
-		}
-		return newModelCooldownError(model, providerForError, resetIn)
-	}
-	return &Error{Code: "auth_unavailable", Message: "no auth available"}
+	return summary.unavailableError(total, provider, model, now)
 }
 
-// availabilitySummaryLocked summarizes total candidates, cooldown count, and earliest retry time.
-func (m *modelScheduler) availabilitySummaryLocked(predicate func(*scheduledAuth) bool) (int, int, time.Time) {
+// availabilitySummaryLocked summarizes total candidates plus the recoverable ones
+// (cooldown and closed window), split so the caller can name the actual cause.
+func (m *modelScheduler) availabilitySummaryLocked(predicate func(*scheduledAuth) bool) (int, recoverableSummary) {
+	var summary recoverableSummary
 	if m == nil {
-		return 0, 0, time.Time{}
+		return 0, summary
 	}
 	total := 0
-	cooldownCount := 0
-	earliest := time.Time{}
 	for _, entry := range m.entries {
 		if predicate != nil && !predicate(entry) {
 			continue
@@ -877,15 +866,14 @@ func (m *modelScheduler) availabilitySummaryLocked(predicate func(*scheduledAuth
 		if entry == nil || entry.auth == nil {
 			continue
 		}
-		if entry.state != scheduledStateCooldown {
-			continue
-		}
-		cooldownCount++
-		if !entry.nextRetryAt.IsZero() && (earliest.IsZero() || entry.nextRetryAt.Before(earliest)) {
-			earliest = entry.nextRetryAt
+		switch entry.state {
+		case scheduledStateCooldown:
+			summary.observe(blockReasonCooldown, entry.nextRetryAt)
+		case scheduledStateWindowClosed:
+			summary.observe(blockReasonWindowClosed, entry.nextRetryAt)
 		}
 	}
-	return total, cooldownCount, earliest
+	return total, summary
 }
 
 // rebuildIndexesLocked reconstructs ready and blocked views from the current entry map.
@@ -913,7 +901,9 @@ func (m *modelScheduler) rebuildIndexesLocked() {
 		case scheduledStateReady:
 			priority := entry.meta.priority
 			priorityBuckets[priority] = append(priorityBuckets[priority], entry)
-		case scheduledStateCooldown, scheduledStateBlocked:
+		case scheduledStateCooldown, scheduledStateBlocked, scheduledStateWindowClosed:
+			// Closed windows go in the blocked index so promoteExpiredLocked
+			// re-evaluates them once nextRetryAt (the reopen time) passes.
 			m.blocked = append(m.blocked, entry)
 		}
 	}

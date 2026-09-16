@@ -47,6 +47,18 @@ const (
 	blockReasonWindowClosed
 )
 
+// recoverable reports whether this reason comes with a known recovery time, making the
+// auth eligible for the "all candidates unavailable, here is when" error instead of a
+// bare "no auth available".
+//
+// A predicate rather than an equality check at each site: the classification happens in
+// four places (the selector's collector, the conductor's route-model collector, and the
+// scheduler's two state-transition switches), and a reason missing from any one of them
+// degrades that path to an error carrying no timing information at all.
+func (r blockReason) recoverable() bool {
+	return r == blockReasonCooldown || r == blockReasonWindowClosed
+}
+
 // Default code and phrase for the model-cooldown flavour of the shared
 // unavailability error. A zero-valued modelCooldownError renders as cooldown,
 // matching the behaviour from before the renderer was parameterized.
@@ -233,7 +245,62 @@ func preferCodexWebsocketAuths(ctx context.Context, provider string, available [
 	return available
 }
 
-func collectAvailableByPriority(auths []*Auth, model string, now time.Time) (available map[int][]*Auth, cooldownCount int, earliest time.Time) {
+// recoverableSummary counts blocked auths whose recovery time is known, split by cause
+// so the caller can pick an error that names the actual reason.
+type recoverableSummary struct {
+	total       int
+	windowOnly  int
+	earliest    time.Time
+	sawNonRecov bool
+}
+
+func (s *recoverableSummary) observe(reason blockReason, next time.Time) {
+	if !reason.recoverable() {
+		s.sawNonRecov = true
+		return
+	}
+	s.total++
+	if reason == blockReasonWindowClosed {
+		s.windowOnly++
+	}
+	if !next.IsZero() && (s.earliest.IsZero() || next.Before(s.earliest)) {
+		s.earliest = next
+	}
+}
+
+// merge folds another shard's summary into this one, keeping the earliest recovery.
+func (s *recoverableSummary) merge(other recoverableSummary) {
+	s.total += other.total
+	s.windowOnly += other.windowOnly
+	s.sawNonRecov = s.sawNonRecov || other.sawNonRecov
+	if !other.earliest.IsZero() && (s.earliest.IsZero() || other.earliest.Before(s.earliest)) {
+		s.earliest = other.earliest
+	}
+}
+
+// unavailableError builds the error for "nothing was pickable". It returns the timed
+// 429 only when every candidate is recoverable with a known time, and names the
+// availability window only when that is the sole cause — a mix of cooldown and closed
+// windows reports as cooldown, the more conservative of the two.
+func (s *recoverableSummary) unavailableError(candidates int, provider, model string, now time.Time) error {
+	if s.total != candidates || s.earliest.IsZero() {
+		return &Error{Code: "auth_unavailable", Message: "no auth available"}
+	}
+	providerForError := provider
+	if providerForError == "mixed" {
+		providerForError = ""
+	}
+	resetIn := s.earliest.Sub(now)
+	if resetIn < 0 {
+		resetIn = 0
+	}
+	if s.windowOnly == candidates {
+		return newAvailabilityWindowError(model, providerForError, resetIn)
+	}
+	return newModelCooldownError(model, providerForError, resetIn)
+}
+
+func collectAvailableByPriority(auths []*Auth, model string, now time.Time) (available map[int][]*Auth, summary recoverableSummary) {
 	available = make(map[int][]*Auth)
 	for i := 0; i < len(auths); i++ {
 		candidate := auths[i]
@@ -243,14 +310,9 @@ func collectAvailableByPriority(auths []*Auth, model string, now time.Time) (ava
 			available[priority] = append(available[priority], candidate)
 			continue
 		}
-		if reason == blockReasonCooldown {
-			cooldownCount++
-			if !next.IsZero() && (earliest.IsZero() || next.Before(earliest)) {
-				earliest = next
-			}
-		}
+		summary.observe(reason, next)
 	}
-	return available, cooldownCount, earliest
+	return available, summary
 }
 
 func getAvailableAuths(auths []*Auth, provider, model string, now time.Time) ([]*Auth, error) {
@@ -258,20 +320,9 @@ func getAvailableAuths(auths []*Auth, provider, model string, now time.Time) ([]
 		return nil, &Error{Code: "auth_not_found", Message: "no auth candidates"}
 	}
 
-	availableByPriority, cooldownCount, earliest := collectAvailableByPriority(auths, model, now)
+	availableByPriority, summary := collectAvailableByPriority(auths, model, now)
 	if len(availableByPriority) == 0 {
-		if cooldownCount == len(auths) && !earliest.IsZero() {
-			providerForError := provider
-			if providerForError == "mixed" {
-				providerForError = ""
-			}
-			resetIn := earliest.Sub(now)
-			if resetIn < 0 {
-				resetIn = 0
-			}
-			return nil, newModelCooldownError(model, providerForError, resetIn)
-		}
-		return nil, &Error{Code: "auth_unavailable", Message: "no auth available"}
+		return nil, summary.unavailableError(len(auths), provider, model, now)
 	}
 
 	bestPriority := 0
@@ -417,8 +468,8 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 	// the stronger signal. Deliberately does NOT touch auth.Disabled: background token
 	// refresh keys on that flag, and disabling a closed account would let its
 	// credentials expire overnight, failing exactly when the window reopens.
-	if outsideAvailableWindow(auth, now) {
-		return true, blockReasonWindowClosed, time.Time{}
+	if closed, nextOpen := outsideAvailableWindow(auth, now); closed {
+		return true, blockReasonWindowClosed, nextOpen
 	}
 	// Durable account-level rate-limit block (e.g. Claude's shared 5h budget). Checked
 	// first and independently of the aggregate Unavailable flag because that flag is

@@ -310,14 +310,14 @@ func TestOutsideAvailableWindow_UsesConfiguredZoneNotLocal(t *testing.T) {
 
 	t.Run("shanghai reads it as 20:00 and opens", func(t *testing.T) {
 		withAvailabilityConfig(t, availabilityConfigFor("Asia/Shanghai"))
-		if outsideAvailableWindow(auth, instant) {
+		if closed, _ := outsideAvailableWindow(auth, instant); closed {
 			t.Errorf("blocked at 20:00 Shanghai, inside the window — window evaluated in the wrong zone")
 		}
 	})
 
 	t.Run("utc reads the same instant as 12:00 and closes", func(t *testing.T) {
 		withAvailabilityConfig(t, availabilityConfigFor("UTC"))
-		if !outsideAvailableWindow(auth, instant) {
+		if closed, _ := outsideAvailableWindow(auth, instant); !closed {
 			t.Errorf("open at 12:00 UTC, outside the window — window evaluated in the wrong zone")
 		}
 	})
@@ -334,7 +334,7 @@ func TestOutsideAvailableWindow_InvalidTimezoneFallsBackToShanghai(t *testing.T)
 	}
 
 	// And it behaves as Shanghai: 12:00 UTC == 20:00 Shanghai, inside 18:00-09:00.
-	if outsideAvailableWindow(windowAuth("18:00-09:00"), time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)) {
+	if closed, _ := outsideAvailableWindow(windowAuth("18:00-09:00"), time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)); closed {
 		t.Errorf("invalid zone did not behave as Asia/Shanghai")
 	}
 }
@@ -426,10 +426,10 @@ func TestShouldRefresh_IgnoresAvailabilityWindow(t *testing.T) {
 	none := &Auth{ID: "a"}
 
 	// Precondition: the window gate really does disagree about these two right now.
-	if !outsideAvailableWindow(closed, midday) {
+	if isClosed, _ := outsideAvailableWindow(closed, midday); !isClosed {
 		t.Fatalf("precondition: expected the 18:00-09:00 account to be closed at midday")
 	}
-	if outsideAvailableWindow(open, midday) {
+	if isOpen, _ := outsideAvailableWindow(open, midday); isOpen {
 		t.Fatalf("precondition: expected the 09:00-18:00 account to be open at midday")
 	}
 
