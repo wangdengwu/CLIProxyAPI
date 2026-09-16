@@ -356,3 +356,40 @@ authScheduler.mixedUnavailableErrorLocked(scheduler.go:431)。
 
 Owed。Task 2-5。子代理本会话被禁用，test-honesty 隔离未买到（控制器同时写测试与实现），已在
 ledger 如实标注。
+
+## 2026-09-16 · task-complete · Task 2 账号可用时间段硬门禁
+端到端打通。auth 文件顶层键 available_window（"HH:MM-HH:MM"，可跨午夜）→ synthesizer 读进
+Attributes → Auth.AvailableWindow() → 门禁落在 isAuthBlockedForModel（Disabled 之后、限流拦截
+之前）。provider 无关、mode 无关。新配置节 auth-availability（enabled 默认 true 作 kill switch、
+timezone 默认 Asia/Shanghai），接入热加载 diff。commit 091b19eb。
+
+配置传递。Pick 是公开 Selector 接口，整条调用链没有 cfg，无法加参数。改用包级 atomic 快照，在
+Manager.SetConfig 里解析并 Store —— 与既有 activeRatelimitTarget 同构。时区只在 SetConfig 解析
+一次（LoadLocation 读文件系统，绝不能进每次选号的热路径）。
+
+**接线是真实缺口，不是形式**。setAvailabilityConfig 写完后一度没有任何生产调用者，功能完全惰性；
+TestSetConfig_WiresAvailabilitySnapshot 是唯一抓到它的测试。教训：新增"配置驱动"能力时，
+"配置→运行时"的接线要单独立一个测试，否则门禁本身测得再全也是死代码。
+
+**自审发现两个真实的静默失效**（本该由独立 coverage adversary 跑，子代理禁用，独立性未达成）：
+1. "18:00-24:00" —— 表达"到午夜"最自然的写法，原实现判 24 越界 → fail-open → 运营者以为设了
+   限制、账号实际全天接流量。已支持 24:00 作当日终点（1440）。
+2. "9:00-18:00" 不补零 —— 实际已能工作，但无测试固定。
+另 "18:00 - 09:00"（带空格）原被我列为非法，实现却接受；判定实现更对（意图无歧义，拒绝只会
+fail-open），改测试并把规格澄清写回 brief。
+共性教训：**fail-open 是安全的失败方向，但它把"解析器过严"变成了静默的功能失效**。所以解析器
+的宽容度本身是安全属性，不只是易用性——凡意图无歧义的写法都应接受。
+
+验证。逐行为 TDD；fail-open 做变异检查（改 fail-closed → 36/36 断言变红，证明网有效）。
+覆盖：同日/跨午夜/左闭右开边界(18:00 开、09:00 关)/16 种非法输入/空与缺失/kill switch/
+配置时区 vs 本地(同一 instant 在 UTC 与上海得出相反结论)/无效时区回落上海/独立 blockReason/
+热加载/并发读写 -race/跨重新登录保留/synthesizer/config 默认值+显式覆盖+部分覆盖。
+warning 日志用 logrus test hook 断言（fail-open 静默，日志是运营者唯一线索）。
+红线用直接证据而非推断：shouldRefresh(窗口关) == shouldRefresh(无窗口)。
+
+预先存在、与本次无关（均已确证）：internal/registry TestCodexFreeModelsExcludeGPT55 失败
+（git stash 后仍失败）；ratelimit_block_test.go 的 gofmt 违规（HEAD 版本即违规，未触碰）。
+
+Owed。Task 3-5。Task 3 的工作量已由 Task 1 的影响分析确认：blockReason 分类点有 4 处
+（selector.go:210、conductor.go:626、scheduler.go:696/742），都要认 blockReasonWindowClosed，
+否则对应路径拿不到带时间的错误。
