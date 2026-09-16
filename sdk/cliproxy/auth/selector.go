@@ -44,21 +44,50 @@ const (
 	blockReasonOther
 )
 
+// Default code and phrase for the model-cooldown flavour of the shared
+// unavailability error. A zero-valued modelCooldownError renders as cooldown,
+// matching the behaviour from before the renderer was parameterized.
+const (
+	cooldownErrorCode   = "model_cooldown"
+	cooldownErrorPhrase = "are cooling down"
+)
+
+// modelCooldownError renders a 429 for "every candidate is unavailable, and we know
+// when the earliest one recovers". The code and phrase are supplied by the caller so
+// distinct causes (cooldown, availability window) share one renderer and cannot drift
+// in shape, headers or duration handling.
 type modelCooldownError struct {
+	code     string
+	phrase   string
 	model    string
 	resetIn  time.Duration
 	provider string
 }
 
 func newModelCooldownError(model, provider string, resetIn time.Duration) *modelCooldownError {
+	return newUnavailabilityError(cooldownErrorCode, cooldownErrorPhrase, model, provider, resetIn)
+}
+
+// newUnavailabilityError builds the shared 429 with a caller-supplied code and phrase.
+// phrase completes the sentence "All credentials for model <model> <phrase>".
+func newUnavailabilityError(code, phrase, model, provider string, resetIn time.Duration) *modelCooldownError {
 	if resetIn < 0 {
 		resetIn = 0
 	}
 	return &modelCooldownError{
+		code:     code,
+		phrase:   phrase,
 		model:    model,
 		provider: provider,
 		resetIn:  resetIn,
 	}
+}
+
+func (e *modelCooldownError) errorCode() string {
+	if e.code == "" {
+		return cooldownErrorCode
+	}
+	return e.code
 }
 
 func (e *modelCooldownError) Error() string {
@@ -66,7 +95,11 @@ func (e *modelCooldownError) Error() string {
 	if modelName == "" {
 		modelName = "requested model"
 	}
-	message := fmt.Sprintf("All credentials for model %s are cooling down", modelName)
+	phrase := e.phrase
+	if phrase == "" {
+		phrase = cooldownErrorPhrase
+	}
+	message := fmt.Sprintf("All credentials for model %s %s", modelName, phrase)
 	if e.provider != "" {
 		message = fmt.Sprintf("%s via provider %s", message, e.provider)
 	}
@@ -81,7 +114,7 @@ func (e *modelCooldownError) Error() string {
 		displayDuration = displayDuration.Round(time.Second)
 	}
 	errorBody := map[string]any{
-		"code":          "model_cooldown",
+		"code":          e.errorCode(),
 		"message":       message,
 		"model":         e.model,
 		"reset_time":    displayDuration.String(),
@@ -93,7 +126,7 @@ func (e *modelCooldownError) Error() string {
 	payload := map[string]any{"error": errorBody}
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Sprintf(`{"error":{"code":"model_cooldown","message":"%s"}}`, message)
+		return fmt.Sprintf(`{"error":{"code":%q,"message":"%s"}}`, e.errorCode(), message)
 	}
 	return string(data)
 }
