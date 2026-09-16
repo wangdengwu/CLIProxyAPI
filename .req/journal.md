@@ -324,3 +324,35 @@ auth_index fix (Load now returns real usage). PRD 2026-08-17... wait — PRD
 2026-08-18-operator-usage-mode-companion-page (tasks 1-3) + ticket usage-mode-quota-display +
 its two follow-up fixes are all delivered and verified. Ready for req:learn.
 
+
+## 2026-09-16 · task-complete · Task 1 参数化 429 不可用错误渲染器
+Prefactor 完成。冷却错误原本硬编码 code "model_cooldown" 与措辞；现在 code + phrase 由构造方
+传入，共享同一套 JSON 体 / StatusCode / Retry-After / 时长格式化。newModelCooldownError 签名与
+行为完全不变（内部转调新的 newUnavailabilityError 填默认值），4 个调用点零改动；零值 struct 也
+回退渲染为 model_cooldown，与重构前一致。commit 08fae584。
+
+验证。先补 characterization 安全网（7 用例，锁住措辞、reset_seconds 向上取整、reset_time 文本、
+不足一秒显示为 1s、provider 有无、Content-Type），对当前代码全绿；再做一次变异检查（措辞改字 +
+ceil→floor），确认它确实变红而非恒真断言——这是"重构安全网"唯一诚实的自证方式。随后 red→green
+新增 newUnavailabilityError 的两个测试。go build ./... 全绿，sdk/cliproxy/auth 全包 -race 通过，
+gofmt/vet 干净，零现有测试改动。
+
+**给 Task 2/3 的关键情报（影响分析发现，推翻了 PRD 的一个前提）。**
+gitnexus impact(newModelCooldownError, upstream) = MEDIUM，4 个直接调用者，不是我原以为的 1 个：
+getAvailableAuths(selector.go)、Manager.availableAuthsForRouteModel(conductor.go:610，是
+getAvailableAuths 的近似拷贝)、modelScheduler.unavailableErrorLocked(scheduler.go:844)、
+authScheduler.mixedUnavailableErrorLocked(scheduler.go:431)。
+
+更要紧的是 blockReason 的分类点有 4 处（都要认新的 window reason，否则 Task 3 在对应路径上拿不到
+带时间的错误）：selector.go:210、conductor.go:626、scheduler.go:696、scheduler.go:742。scheduler
+把判定结果映射成 Ready/Cooldown/Disabled/Blocked 四态，只有 Cooldown 计入带时间的错误；window
+若落到 default(Blocked) 就会退化成无信息的 no auth available。建议给 blockReason 加一个谓词
+（如 countsAsRecoverable()），4 处改调用它，而不是四处各写一遍 || 比较。
+
+好消息：scheduler.go:692/737 确实调用 isAuthBlockedForModel，所有调度路径共用同一个判定点，
+**Task 2 的门禁只改 isAuthBlockedForModel 一处即可全局生效**，设计成立。
+另 conductor.go:1941 用的是 `reason == blockReasonDisabled` 排除法算最小等待时间，window 天然被
+包含且行为正确，无需改动。
+
+Owed。Task 2-5。子代理本会话被禁用，test-honesty 隔离未买到（控制器同时写测试与实现），已在
+ledger 如实标注。
