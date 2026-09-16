@@ -46,6 +46,10 @@
   select { background: var(--panel-2); border: 1px solid var(--line); color: var(--ink); border-radius: 8px; padding: 7px 9px; font-size: 13px; }
   input.win { background: var(--panel-2); border: 1px solid var(--line); color: var(--ink); border-radius: 8px; padding: 7px 9px; font-size: 13px; width: 122px; font-variant-numeric: tabular-nums; }
   input.win:disabled { opacity: .55; }
+  .wbadge { display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; vertical-align: middle; }
+  .wbadge.open { color: var(--shared); background: rgba(95,191,143,.12); }
+  .wbadge.closed { color: var(--ded); background: rgba(240,163,94,.14); }
+  .reopen { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
   .msg { margin-top: 12px; font-size: 13px; min-height: 18px; }
   .msg.err { color: var(--err); }
   .msg.ok { color: var(--ok); }
@@ -199,6 +203,25 @@
     if (typeof raw !== "string") { return ""; }
     return raw.trim();
   }
+
+  // wallClockOf pulls HH:MM straight out of an RFC3339 timestamp WITHOUT converting
+  // timezones. The server anchors windows to its own configured zone; handing the
+  // string to Date() would reinterpret the instant in the browser's zone and print a
+  // time that contradicts the open/closed badge sitting next to it.
+  function wallClockOf(iso) {
+    if (typeof iso !== "string") { return ""; }
+    var m = iso.match(/T(\d{2}):(\d{2})/);
+    return m ? m[1] + ":" + m[2] : "";
+  }
+
+  // windowStatus turns the server-computed availability fields into what the badge
+  // needs. Returns null when the server did not report availability at all (an older
+  // build), so the page degrades to showing no badge rather than inventing a verdict.
+  function windowStatus(availableNow, nextOpenAt) {
+    if (typeof availableNow !== "boolean") { return null; }
+    if (availableNow) { return { label: "open", cls: "open", at: "" }; }
+    return { label: "closed", cls: "closed", at: wallClockOf(nextOpenAt) };
+  }
   // ---- pure:end ----
 
   function usageCell(win, nowMs) {
@@ -219,11 +242,22 @@
   // windowCell renders the editable availability window. One text box rather than two
   // time controls: an overnight window like 18:00-09:00 reads as ONE span, and two
   // separate controls invite reading it as two unrelated fields.
-  function windowCell(idAttr, raw) {
+  function windowCell(idAttr, raw, availableNow, nextOpenAt) {
     var value = escapeHtml(windowValue(raw));
     return '<input class="win" type="text" spellcheck="false" autocomplete="off"' +
       ' data-window="' + idAttr + '" data-current="' + value + '" value="' + value + '"' +
-      ' placeholder="all day" title="e.g. 18:00-09:00 — empty means all day">';
+      ' placeholder="all day" title="e.g. 18:00-09:00 — empty means all day">' +
+      windowBadge(availableNow, nextOpenAt);
+  }
+
+  // windowBadge renders the server's open/closed verdict. The verdict is NOT computed
+  // here: the window is anchored to the server's configured timezone, and this browser's
+  // zone is arbitrary.
+  function windowBadge(availableNow, nextOpenAt) {
+    var st = windowStatus(availableNow, nextOpenAt);
+    if (!st) { return ""; }
+    return '<span class="wbadge ' + st.cls + '">' + st.label + '</span>' +
+      (st.at ? '<small class="reopen">opens ' + escapeHtml(st.at) + '</small>' : '');
   }
 
   function render(entries) {
@@ -259,7 +293,7 @@
           : '<td class="usage"><span class="na">—</span></td><td class="usage"></td>') +
         '<td>' + badge + '</td>' +
         '<td>' + sel + '</td>' +
-        '<td class="window">' + windowCell(idAttr, e.available_window) + '</td>' +
+        '<td class="window">' + windowCell(idAttr, e.available_window, e.available_now, e.next_open_at) + '</td>' +
       '</tr>';
     }).join("");
     host.innerHTML =

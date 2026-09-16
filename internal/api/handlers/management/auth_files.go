@@ -486,6 +486,17 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if window := auth.AvailableWindow(); window != "" {
 		entry["available_window"] = window
 	}
+	// Serve a server-computed open/closed verdict. The page must not derive this: the
+	// window is anchored to the server's configured timezone while a browser's zone is
+	// arbitrary, so a client-side verdict would be confidently wrong for anyone working
+	// elsewhere. available_now is always present so a client can tell an old server
+	// (field absent) from an available account (field true); next_open_at is omitted
+	// while open, and carries a zone offset so the page never has to reinterpret it.
+	availableNow, nextOpen := coreauth.AvailabilityStatus(auth, time.Now())
+	entry["available_now"] = availableNow
+	if !availableNow && !nextOpen.IsZero() {
+		entry["next_open_at"] = nextOpen.Format(time.RFC3339)
+	}
 	return entry
 }
 

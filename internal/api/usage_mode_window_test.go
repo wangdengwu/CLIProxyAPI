@@ -80,6 +80,83 @@ func TestUsageModePanel_RetainsExistingControls(t *testing.T) {
 	}
 }
 
+// The open/closed badge must render from the server's verdict and must not recompute
+// it: the window is anchored to the server's configured timezone while the browser's
+// zone is arbitrary, so a client-side verdict would be confidently wrong for anyone
+// working elsewhere — and wrong in a way that looks entirely plausible.
+func TestUsageModePanel_ServesServerComputedBadge(t *testing.T) {
+	body := servedPanel(t)
+
+	required := []struct {
+		name    string
+		snippet string
+	}{
+		{name: "badge rendered from the server fields", snippet: "windowBadge(availableNow, nextOpenAt)"},
+		{name: "row passes through both server fields", snippet: "e.available_now, e.next_open_at"},
+		{name: "status mapper lives in the verifiable pure block", snippet: "function windowStatus(availableNow, nextOpenAt)"},
+		{name: "wall-clock extractor lives in the pure block", snippet: "function wallClockOf(iso)"},
+		{name: "open badge styling", snippet: ".wbadge.open"},
+		{name: "closed badge styling", snippet: ".wbadge.closed"},
+		{name: "reopen time is escaped", snippet: "escapeHtml(st.at)"},
+	}
+
+	for _, tt := range required {
+		if !strings.Contains(body, tt.snippet) {
+			t.Errorf("%s: served page does not contain %q", tt.name, tt.snippet)
+		}
+	}
+}
+
+// wallClockOf must read the hour and minute straight out of the RFC3339 string.
+// Handing it to Date() would reinterpret the instant in the browser's zone and print
+// a time contradicting the badge beside it — the exact failure this design avoids.
+func TestUsageModePanel_ReopenTimeIsNotTimezoneConverted(t *testing.T) {
+	body := servedPanel(t)
+
+	fn := functionSource(t, body, "function wallClockOf(iso)")
+	for _, forbidden := range []string{"new Date", "Date.parse", "toLocaleTimeString", "getHours"} {
+		if strings.Contains(fn, forbidden) {
+			t.Errorf("wallClockOf uses %q; it must not reinterpret the server's zone", forbidden)
+		}
+	}
+	if !strings.Contains(fn, "match(") {
+		t.Error("wallClockOf does not parse the timestamp textually")
+	}
+}
+
+// An older server omits available_now entirely. The page must then show no badge at
+// all rather than inventing a verdict or rendering "undefined".
+func TestUsageModePanel_BadgeDegradesWhenServerOmitsTheField(t *testing.T) {
+	body := servedPanel(t)
+
+	fn := functionSource(t, body, "function windowStatus(availableNow, nextOpenAt)")
+	if !strings.Contains(fn, `typeof availableNow !== "boolean"`) {
+		t.Error("windowStatus does not guard against a missing available_now")
+	}
+	if !strings.Contains(fn, "return null") {
+		t.Error("windowStatus has no null path for an unreported verdict")
+	}
+	guard := strings.Index(fn, `typeof availableNow !== "boolean"`)
+	truthy := strings.Index(fn, "if (availableNow)")
+	if guard < 0 || truthy < 0 || guard > truthy {
+		t.Error("windowStatus checks availableNow's truthiness before its type; a missing field would read as closed")
+	}
+}
+
+// functionSource returns the source of the function whose signature line is given.
+func functionSource(t *testing.T, body, signature string) string {
+	t.Helper()
+	start := strings.Index(body, signature)
+	if start < 0 {
+		t.Fatalf("%q not found in served page", signature)
+	}
+	end := strings.Index(body[start:], "\n  }")
+	if end < 0 {
+		t.Fatalf("could not delimit the body of %q", signature)
+	}
+	return body[start : start+end]
+}
+
 // windowValue is the one piece of new display logic, and its job is to keep absent or
 // malformed API values from reaching the DOM as "undefined". Go cannot execute it, so
 // pin its source shape: the type guard must come before any string operation.

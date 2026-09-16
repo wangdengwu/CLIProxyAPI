@@ -111,6 +111,22 @@ func parseAvailabilityWindow(raw string) (availabilityWindow, bool) {
 // value "24:00" resolves to.
 const minutesPerDay = 24 * 60
 
+// AvailabilityStatus reports whether auth may be scheduled at now and, when it may
+// not, the instant its window reopens (zero otherwise).
+//
+// Exported so the management listing can serve a server-computed verdict. The page
+// must not derive this itself: the window is anchored to the server's configured
+// timezone while a browser's zone is arbitrary, so a client-side verdict would be
+// confidently wrong for anyone working elsewhere. Shares its implementation with the
+// scheduling gate, so the badge and the actual decision cannot disagree.
+func AvailabilityStatus(auth *Auth, now time.Time) (availableNow bool, nextOpen time.Time) {
+	closed, reopensAt := outsideAvailableWindow(auth, now)
+	if !closed {
+		return true, time.Time{}
+	}
+	return false, reopensAt
+}
+
 // ValidAvailabilityWindow reports whether raw is a window this package will honour.
 //
 // Exported so the management write path validates with the exact same parser the

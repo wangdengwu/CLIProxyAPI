@@ -409,6 +409,88 @@ func TestSetConfig_WiresAvailabilitySnapshot(t *testing.T) {
 	}
 }
 
+// TestAvailabilityStatus is the exported view the management listing serves to the
+// companion page. The page must never compute open/closed itself — the window is
+// anchored to the server's configured zone while a browser's zone is arbitrary — so
+// this function is the single source of that verdict for both the UI badge and the
+// all-closed error.
+func TestAvailabilityStatus(t *testing.T) {
+	t.Run("closed window reports unavailable with a reopen time", func(t *testing.T) {
+		withAvailabilityConfig(t, availabilityConfigFor("Asia/Shanghai"))
+		available, nextOpen := AvailabilityStatus(windowAuth("18:00-09:00"), atShanghai(t, 12, 0))
+		if available {
+			t.Errorf("available = true at midday, want false")
+		}
+		if nextOpen.Hour() != 18 || nextOpen.Minute() != 0 {
+			t.Errorf("nextOpen = %s, want 18:00", nextOpen.Format(time.RFC3339))
+		}
+	})
+
+	t.Run("open window reports available with no reopen time", func(t *testing.T) {
+		withAvailabilityConfig(t, availabilityConfigFor("Asia/Shanghai"))
+		available, nextOpen := AvailabilityStatus(windowAuth("18:00-09:00"), atShanghai(t, 20, 0))
+		if !available {
+			t.Errorf("available = false at 20:00, want true")
+		}
+		if !nextOpen.IsZero() {
+			t.Errorf("nextOpen = %s while open, want zero", nextOpen)
+		}
+	})
+
+	t.Run("no window is always available", func(t *testing.T) {
+		withAvailabilityConfig(t, availabilityConfigFor("Asia/Shanghai"))
+		available, nextOpen := AvailabilityStatus(&Auth{ID: "a"}, atShanghai(t, 12, 0))
+		if !available || !nextOpen.IsZero() {
+			t.Errorf("available = %v, nextOpen = %v; want true and zero", available, nextOpen)
+		}
+	})
+
+	t.Run("malformed window is available, matching the gate's fail-open", func(t *testing.T) {
+		withAvailabilityConfig(t, availabilityConfigFor("Asia/Shanghai"))
+		available, nextOpen := AvailabilityStatus(windowAuth("6pm-9am"), atShanghai(t, 12, 0))
+		if !available || !nextOpen.IsZero() {
+			t.Errorf("available = %v, nextOpen = %v; want true and zero for an unparseable window", available, nextOpen)
+		}
+	})
+
+	t.Run("kill switch off reports everything available", func(t *testing.T) {
+		cfg := availabilityConfigFor("Asia/Shanghai")
+		cfg.AuthAvailability.Enabled = false
+		withAvailabilityConfig(t, cfg)
+
+		available, nextOpen := AvailabilityStatus(windowAuth("18:00-09:00"), atShanghai(t, 12, 0))
+		if !available {
+			t.Errorf("available = false with the kill switch off; the page would show a wall of misleading 'closed' badges")
+		}
+		if !nextOpen.IsZero() {
+			t.Errorf("nextOpen = %s with the kill switch off, want zero", nextOpen)
+		}
+	})
+
+	t.Run("nil auth is available", func(t *testing.T) {
+		withAvailabilityConfig(t, availabilityConfigFor("Asia/Shanghai"))
+		if available, _ := AvailabilityStatus(nil, atShanghai(t, 12, 0)); !available {
+			t.Errorf("available = false for a nil auth, want true")
+		}
+	})
+
+	t.Run("verdict matches the scheduling gate exactly", func(t *testing.T) {
+		withAvailabilityConfig(t, availabilityConfigFor("Asia/Shanghai"))
+		// The badge and the actual scheduling decision must never disagree; an
+		// operator debugging "why is this account idle" would have no way to tell
+		// which one is lying.
+		for _, hour := range []int{0, 3, 9, 12, 17, 18, 20, 23} {
+			now := atShanghai(t, hour, 0)
+			auth := windowAuth("18:00-09:00")
+			available, _ := AvailabilityStatus(auth, now)
+			blocked, _, _ := isAuthBlockedForModel(auth, "m", now)
+			if available == blocked {
+				t.Errorf("at %02d:00 AvailabilityStatus says available=%v but the gate says blocked=%v", hour, available, blocked)
+			}
+		}
+	})
+}
+
 // TestShouldRefresh_IgnoresAvailabilityWindow is direct evidence for the red line.
 // Background token refresh keys on auth.Disabled and must be blind to the window: an
 // account closed all night has to keep refreshing, or its credentials go stale and it
