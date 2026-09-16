@@ -2,7 +2,7 @@
 id: 4
 slug: edit-window-in-companion-page
 prd: docs/prds/2026-09-16-auth-availability-window.md
-state: ready-for-agent
+state: done
 category: enhancement
 blocked_by: [2]
 ---

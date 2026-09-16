@@ -2,7 +2,7 @@
 id: 3
 slug: all-closed-error-with-next-open
 prd: docs/prds/2026-09-16-auth-availability-window.md
-state: ready-for-agent
+state: done
 category: enhancement
 blocked_by: [1, 2]
 ---

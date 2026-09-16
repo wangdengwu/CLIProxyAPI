@@ -2,7 +2,7 @@
 id: 2
 slug: availability-window-gate
 prd: docs/prds/2026-09-16-auth-availability-window.md
-state: ready-for-agent
+state: done
 category: enhancement
 blocked_by: []
 ---

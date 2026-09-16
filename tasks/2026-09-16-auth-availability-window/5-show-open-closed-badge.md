@@ -2,10 +2,14 @@
 id: 5
 slug: show-open-closed-badge
 prd: docs/prds/2026-09-16-auth-availability-window.md
-state: ready-for-agent
+state: done
 category: enhancement
 blocked_by: [3, 4]
 ---
+
+> **Owed after done:** 代码与全部自动化验证已完成并提交（commit 2d32e6fe）。仍欠 lab 上一次
+> 浏览器往返确认：徽章与实际调度行为一致。需要先部署。另：本会话 node 不可用，JS 运行时行为
+> 只验证了源码形状与 markup，未经执行验证。
 
 ## What to build
 
