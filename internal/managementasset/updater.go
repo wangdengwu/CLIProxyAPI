@@ -81,16 +81,8 @@ func runAutoUpdater(ctx context.Context) {
 
 	runOnce := func() {
 		cfg := currentConfigPtr.Load()
-		if cfg == nil {
-			log.Debug("management asset auto-updater skipped: config not yet available")
-			return
-		}
-		if cfg.RemoteManagement.DisableControlPanel {
-			log.Debug("management asset auto-updater skipped: control panel disabled")
-			return
-		}
-		if cfg.RemoteManagement.DisableAutoUpdatePanel {
-			log.Debug("management asset auto-updater skipped: disable-auto-update-panel is enabled")
+		if reason := panelUpdaterSkipReason(cfg); reason != "" {
+			log.Debugf("management asset auto-updater skipped: %s", reason)
 			return
 		}
 
@@ -109,6 +101,29 @@ func runAutoUpdater(ctx context.Context) {
 			runOnce()
 		}
 	}
+}
+
+// panelUpdaterSkipReason reports why the background updater should not run, or "" when it
+// should. Decision and diagnostic come from one place on purpose: the reasons are the only
+// visible trace of why an operator's panel is not being refreshed, and a separate bool would
+// be free to drift from the log line explaining it.
+func panelUpdaterSkipReason(cfg *config.Config) string {
+	if cfg == nil {
+		return "config not yet available"
+	}
+	if cfg.RemoteManagement.DisableControlPanel {
+		return "control panel disabled"
+	}
+	if cfg.RemoteManagement.DisableAutoUpdatePanel {
+		return "disable-auto-update-panel is enabled"
+	}
+	if strings.TrimSpace(cfg.RemoteManagement.PanelGitHubRepository) == "" {
+		// The panel served to operators is the built-in asset, so a downloaded copy would
+		// sit on disk unread — and the download would keep tripping GitHub's per-IP rate
+		// limit for nothing.
+		return "serving the built-in panel; set panel-github-repository to track a release instead"
+	}
+	return ""
 }
 
 func newHTTPClient(proxyURL string) *http.Client {

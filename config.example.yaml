@@ -25,8 +25,21 @@ remote-management:
   # Disable the bundled management control panel asset download and HTTP route when true.
   disable-control-panel: false
 
+  # Track a GitHub project's latest release for the management control panel instead of
+  # serving the built-in panel that ships inside this binary (default: empty).
+  #
+  # Leave this empty unless you have a reason not to. The built-in panel is pinned to a
+  # release known to work against this backend's /v0/management API; the upstream panel
+  # moved to a /v8/management API this backend does not serve, so tracking its latest
+  # release will eventually hand operators a panel that refuses to log in. Setting this
+  # also re-enables the background updater and its periodic GitHub requests.
+  #
+  # Accepts a repository URL (https://github.com/org/repo) or an API releases endpoint.
+  # panel-github-repository: ""
+
   # Disable automatic periodic background updates of the management panel from GitHub (default: false).
-  # When enabled, the panel is only downloaded on first access if missing, and never auto-updated afterward.
+  # Only has an effect when panel-github-repository is set; with no override the built-in
+  # panel is served and nothing is ever downloaded.
   # disable-auto-update-panel: false
 
   # GitHub repository for the management control panel. Accepts a repository URL or releases API URL.
