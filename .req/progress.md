@@ -14,6 +14,15 @@ than the bug being fixed.
 Task 1 carries one owed human verification — an operator browser round-trip on lab
 confirming v1.24.2 still works against this v6.10.9-lineage v0 API.
 
+POST-DEPLOY CORRECTION (commit 44694eff): v2026.9.30 shipped inert. LoadConfig backfills
+panel-github-repository with the default repository, so both slices' "no override
+configured" branch was unreachable in production while every unit test stayed green —
+they built Config by hand and skipped the loader. Both slices now decide on
+RemoteManagement.PanelRepositoryOverridden() (set AND different from the default), with
+regression tests that go through LoadConfig and assert the backfill still happens so they
+cannot silently go vacuous. The startup log line added for an acceptance criterion is what
+caught it.
+
 Worktrees skipped: `git worktree` is outside this project's permission allowlist. Running
 directly on the PRD branch instead.
 

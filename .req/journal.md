@@ -583,3 +583,36 @@ Owed。Task 2（默认路径关掉后台 updater）；以及本 PRD 唯一的人
 不成立（Task 1 之后默认路径根本不下载）。
 
 Owed。本 PRD 全部代码切片完成，唯一剩余是部署 + 运营者浏览器往返。
+
+## 2026-09-30 · verify-evidence · v2026.9.30 部署后发现空转，判据改为「非默认仓库」
+
+部署 v2026.9.30 到 lab 后，启动日志打出
+`management control panel source: latest release of https://github.com/.../Cli-Proxy-API-Management-Center (auto-update)`
+—— **两个切片在生产里都是死代码**。commit 44694eff 修复。
+
+**根因**：`LoadConfig`（`internal/config/config.go:756`）无条件把空的
+`panel-github-repository` 回填成 `DefaultPanelGitHubRepository`。于是「`TrimSpace(repo) == ""`
+= 用内置面板」这个判据**在任何真实加载的配置下都永不成立**：handler 永远走逃生舱、updater
+永远运行。lab 上面板仍是下载来的 v1.25.0，故障一点没修。
+
+**为什么全部单测是绿的**：测试直接构造 `&config.Config{}`，绕开了 loader。这是上个 PRD
+Task 3 那条教训的同一形状（「改行为前先确认哪条代码路径承载真实流量」），只是这次伪装成
+「配置字段的默认值」而不是「哪个 dispatch 分支」。**一般化：凡是以「字段为空/零值」为判据的
+分支，先去 loader 里确认这个零值到底能不能活着到达运行时。** Go 的零值语义让这类判据写起来
+特别自然，而 defaulting 层会静默地把它变成不可达代码。
+
+**唯一抓住它的东西是那行启动日志**，而它是我为了满足一条「运营者要能看出面板来源」的验收
+条件才加的。如果当初把它当成可有可无的 nicety 砍掉，这个 bug 会一路活到运营者报「面板还是
+坏的」为止。可观测性在这里不是锦上添花，是唯一的探针。
+
+**新判据**：`RemoteManagement.PanelRepositoryOverridden()` —— 设了且**不等于默认仓库**才算
+覆盖。与配置层已有意图一致（`config.go:1451` 早就把「值等于默认」当作「没真正设置」来决定
+是否落盘）；而且默认仓库恰恰就是那个发 v8 面板的仓库，所以「跟它的 latest」本来就该是个
+需要指名道姓的请求。
+
+**回归测试过真实 `LoadConfig`**，并且显式断言回填仍然发生（`PanelGitHubRepository != ""`）——
+否则哪天 loader 改了，这些测试会静默退化成空转而不是报警。变异验证：把判据退回
+`repo != ""`，三个包共 7 个用例变红。
+
+lab 配置走 PGSTORE（`PGSTORE_DSN`/`PGSTORE_SCHEMA`），无 configmap/config 卷，管理密钥也不在
+env 里 —— 所以无法用「让运营者清掉这个 key」绕过，只能在代码里修。这也反过来说明判据选对了。
