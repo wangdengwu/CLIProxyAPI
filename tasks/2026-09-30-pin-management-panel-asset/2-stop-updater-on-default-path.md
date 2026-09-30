@@ -2,7 +2,7 @@
 id: 2
 slug: stop-updater-on-default-path
 prd: docs/prds/2026-09-30-pin-management-panel-asset.md
-state: ready-for-agent
+state: done
 category: enhancement
 blocked_by: [1]
 ---

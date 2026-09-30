@@ -2,7 +2,7 @@
 id: 1
 slug: embed-pinned-panel-asset
 prd: docs/prds/2026-09-30-pin-management-panel-asset.md
-state: ready-for-agent
+state: done
 category: bug
 blocked_by: []
 ---
