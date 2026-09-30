@@ -116,3 +116,24 @@ scheduler 不直接消费 reason，而是映射成实体状态（Ready/Cooldown/
 
 验证这条红线时用直接证据而非代码推断：断言「被拦账号与未被拦账号的 `shouldRefresh` 结果一致」，比断言「Disabled 字段没被改」更能说明独立性。
 
+
+## config-loader-backfills-defaults-so-emptiness-is-not-a-signal
+
+以「配置字段为空/零值」为判据的分支，先去 `LoadConfig` 里确认这个零值能不能活着到达运行时 —— 多半不能。
+
+`internal/config` 的加载末尾会给一批字段回填默认值（`remote-management.panel-github-repository` → 上游面板仓库、`pprof.addr`、`routing.strategy` 等）。所以 `TrimSpace(cfg.X) == ""` 这种判据在**任何真实加载的配置下永不成立**，挂在它下面的分支是不可达代码。而单测直接构造 `&config.Config{}`，零值原样保留，于是**全绿**。这个组合已经让一个发布版本整个空转过一次（面板内置了、生产却仍在服务下载来的旧资产）。
+
+正确的判据是「值不等于默认值」。项目里早有这个先例：配置写回时的 default 比较表就是用「值等于默认」来决定某个键要不要落盘 —— 也就是说，**「等于默认」在本仓的既有语义里就等同于「没真正设置」**。
+
+两条配套做法：
+
+- 回归测试必须过真实 `LoadConfig`（写临时 config.yaml 再加载），并**显式断言回填仍在发生**；否则哪天 loader 改了，这些测试会静默退化成空转而不是报警。
+- 给这类分支留一个启动期的可观测输出（一行 `info` 日志说明「当前实际走的是哪条分支」）。上面那次空转，唯一抓住它的就是这样一行日志，而它当初是为了满足一条看着像 nicety 的验收条件才加的。
+
+## gin-response-writer-buffers-status-codes
+
+`gin.CreateTestContext` 裸驱动 handler 时，**无 body 的状态码看不见**：gin 的 `ResponseWriter.WriteHeader` 只记录状态、不写下游，要等 engine 在 handler 返回后调 `WriteHeaderNow()` 才落盘。于是一个正确返回 304（或 204）的 handler，在 `httptest.ResponseRecorder` 上读出来是 **200**。
+
+`AbortWithStatus` 系列自己调了 `WriteHeaderNow()`，所以 404/401 这类断言是准的 —— 这让问题更隐蔽：同一个测试文件里大部分断言可信，唯独条件请求那条骗人。
+
+解法不是补一句 `ctx.Writer.WriteHeaderNow()`，而是**断言一律过真实 engine**：`gin.New()` + 注册该路由 + `engine.ServeHTTP(rec, req)`。顺带消掉整类脚手架产物。本仓既有的 `internal/api/usage_mode_panel_test.go` 就是那个易错写法（它只断言 200/404 所以没踩到），新写 handler 测试别照抄它的形状。

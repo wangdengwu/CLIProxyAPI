@@ -9,6 +9,13 @@ Claude 账号 auth 文件的顶层键，标记该账号参不参与主动限流�
 
 现在可由运营者通过管理接口设置（不再只能手工改文件）：`PATCH /v0/management/auth-files/fields` 的白名单已含 `claude_usage_mode`（写 dedicated 时双写 Metadata+Attributes、shared 时双删，空值即删同 priority/note），`ListAuthFiles` 也吐出当前值；内嵌伴随页 `/usage-mode.html` 提供 shared/dedicated 开关 UI。翻成 `dedicated` 时会顺带清除该账号可能挂着的内存限流拦截块（`ClearRatelimitBlock`，`applyRatelimitBlock` 的逆），使其立即恢复接流量，而非等 5h 窗口自然重置。
 
+**Panel-repository-override**:
+配置键 `remote-management.panel-github-repository`，决定运营者拿到的 `/management.html` 是哪一份。
+
+语义不是「空 / 非空」，而是「**是不是一个不同于默认的仓库**」：留空会被 `LoadConfig` 回填成上游面板仓库地址，而空与默认值**都表示用内置面板** —— 即随本二进制 `go:embed` 发布、钉死在某个已知可用版本的那一份（见 [ADR 0005](docs/adr/0005-控制面板资产随本仓库发布-不跟第三方-latest.md)）。只有填一个**不同于默认**的仓库才算解钉：回到「跟随该仓库 latest」的下载路径，并且这也是后台面板 updater 的总开关 —— 未解钉时它完全不运行。
+
+判据由 `RemoteManagement.PanelRepositoryOverridden()` 统一提供，面板服务与 updater 共用一份，不各写一遍。
+
 **Operator-set-keys**:
 auth 文件里由运营者（而非 OAuth 流程）设定的顶层键，表达运营意图而非身份凭证：`claude_usage_mode`、`priority`、`note`、`headers`、`prefix`、`proxy_url`、`excluded_models`。
 
