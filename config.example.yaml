@@ -28,7 +28,9 @@ remote-management:
   # Track a GitHub project's latest release for the management control panel instead of
   # serving the built-in panel that ships inside this binary (default: empty).
   #
-  # Leave this empty unless you have a reason not to. The built-in panel is pinned to a
+  # Leave this empty unless you have a reason not to. Empty is backfilled with the upstream
+  # panel repository on load, and that value is treated the same as empty — only a
+  # *different* repository counts as asking to track releases. The built-in panel is pinned to a
   # release known to work against this backend's /v0/management API; the upstream panel
   # moved to a /v8/management API this backend does not serve, so tracking its latest
   # release will eventually hand operators a panel that refuses to log in. Setting this

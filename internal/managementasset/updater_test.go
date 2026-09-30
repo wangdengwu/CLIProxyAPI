@@ -1,6 +1,8 @@
 package managementasset
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -80,5 +82,25 @@ func TestPanelUpdaterSkipReason_BlankRepositoryIsNoOverride(t *testing.T) {
 	cfg.RemoteManagement.PanelGitHubRepository = "   "
 	if reason := panelUpdaterSkipReason(cfg); reason == "" {
 		t.Fatal("blank panel-github-repository was treated as an override")
+	}
+}
+
+// The config this updater sees at runtime comes from LoadConfig, which backfills
+// panel-github-repository with the default repository — so a config built by hand can show
+// this updater standing down while the real one runs on every tick. That gap shipped once.
+func TestPanelUpdaterSkipReason_ThroughRealConfigLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("port: 8317\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := config.LoadConfig(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.RemoteManagement.PanelGitHubRepository == "" {
+		t.Fatal("precondition lost: LoadConfig no longer backfills the panel repository, so this test no longer guards anything")
+	}
+	if reason := panelUpdaterSkipReason(cfg); reason == "" {
+		t.Fatal("updater would run for a config that never asked for a panel repository")
 	}
 }

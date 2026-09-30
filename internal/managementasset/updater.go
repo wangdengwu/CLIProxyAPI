@@ -117,7 +117,7 @@ func panelUpdaterSkipReason(cfg *config.Config) string {
 	if cfg.RemoteManagement.DisableAutoUpdatePanel {
 		return "disable-auto-update-panel is enabled"
 	}
-	if strings.TrimSpace(cfg.RemoteManagement.PanelGitHubRepository) == "" {
+	if !cfg.RemoteManagement.PanelRepositoryOverridden() {
 		// The panel served to operators is the built-in asset, so a downloaded copy would
 		// sit on disk unread — and the download would keep tripping GitHub's per-IP rate
 		// limit for nothing.

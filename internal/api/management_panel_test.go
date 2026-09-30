@@ -168,6 +168,45 @@ func TestServeManagementControlPanel_DefaultPathLeavesStaticDirUntouched(t *test
 	}
 }
 
+// The config that reaches the server at runtime comes from LoadConfig, which backfills
+// panel-github-repository with the default repository. A hand-built Config therefore proves
+// nothing about production: the first release of this change shipped with the default path
+// unreachable and every unit test green. This one goes through the real loader.
+func TestServeManagementControlPanel_LoadedConfigWithoutOverrideServesEmbedded(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("port: 8317\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := proxyconfig.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.RemoteManagement.PanelGitHubRepository == "" {
+		t.Fatal("precondition lost: LoadConfig no longer backfills the panel repository, so this test no longer guards anything")
+	}
+
+	staticDir := t.TempDir()
+	t.Setenv("MANAGEMENT_STATIC_PATH", staticDir)
+	s := &Server{cfg: cfg, configFilePath: configPath}
+
+	rec := serveManagementPanel(t, s, httptest.NewRequest(http.MethodGet, "/management.html", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if rec.Body.Len() != len(managementPanelHTML) {
+		t.Fatalf("body length = %d, want the embedded asset (%d)", rec.Body.Len(), len(managementPanelHTML))
+	}
+	entries, err := os.ReadDir(staticDir)
+	if err != nil {
+		t.Fatalf("read static dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("static dir gained %d entries, want none", len(entries))
+	}
+}
+
 // Which panel an operator is looking at is otherwise invisible at runtime; this string is
 // what the startup log prints.
 func TestManagementPanelSource(t *testing.T) {
@@ -175,6 +214,8 @@ func TestManagementPanelSource(t *testing.T) {
 	disabled.RemoteManagement.DisableControlPanel = true
 	overridden := &proxyconfig.Config{}
 	overridden.RemoteManagement.PanelGitHubRepository = "https://github.com/acme/panel"
+	defaulted := &proxyconfig.Config{}
+	defaulted.RemoteManagement.PanelGitHubRepository = proxyconfig.DefaultPanelGitHubRepository
 
 	cases := []struct {
 		name string
@@ -184,6 +225,7 @@ func TestManagementPanelSource(t *testing.T) {
 		{name: "nil config", cfg: nil, want: []string{"disabled"}},
 		{name: "control panel disabled", cfg: disabled, want: []string{"disabled"}},
 		{name: "default", cfg: &proxyconfig.Config{}, want: []string{"built-in", pinnedManagementPanelVersion}},
+		{name: "default repository spelled out is not an override", cfg: defaulted, want: []string{"built-in", pinnedManagementPanelVersion}},
 		{name: "repository override", cfg: overridden, want: []string{"https://github.com/acme/panel", "auto-update"}},
 	}
 	for _, tc := range cases {

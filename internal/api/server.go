@@ -714,7 +714,7 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 	}
 	// Default: hand out the build-time asset. Nothing is read from disk and nothing is
 	// downloaded, so a stale copy left behind by an earlier auto-update is simply ignored.
-	if strings.TrimSpace(cfg.RemoteManagement.PanelGitHubRepository) == "" {
+	if !cfg.RemoteManagement.PanelRepositoryOverridden() {
 		s.serveEmbeddedManagementPanel(c)
 		return
 	}
@@ -752,8 +752,8 @@ func managementPanelSource(cfg *config.Config) string {
 	if cfg == nil || cfg.RemoteManagement.DisableControlPanel {
 		return "disabled"
 	}
-	if repo := strings.TrimSpace(cfg.RemoteManagement.PanelGitHubRepository); repo != "" {
-		return fmt.Sprintf("latest release of %s (auto-update)", repo)
+	if cfg.RemoteManagement.PanelRepositoryOverridden() {
+		return fmt.Sprintf("latest release of %s (auto-update)", strings.TrimSpace(cfg.RemoteManagement.PanelGitHubRepository))
 	}
 	return fmt.Sprintf("built-in %s", pinnedManagementPanelVersion)
 }

@@ -210,6 +210,19 @@ type RemoteManagement struct {
 	PanelGitHubRepository string `yaml:"panel-github-repository"`
 }
 
+// PanelRepositoryOverridden reports whether the operator asked for a control panel other
+// than the one built into this binary.
+//
+// Emptiness cannot answer this: LoadConfig backfills the field with the default repository
+// whenever it is absent or blank, so a loaded configuration never carries an empty value.
+// The default repository is also the one whose recent releases target an API this backend
+// does not serve, which is why tracking it is something an operator has to ask for by name
+// rather than something they get by leaving a key unset.
+func (r RemoteManagement) PanelRepositoryOverridden() bool {
+	repo := strings.TrimSpace(r.PanelGitHubRepository)
+	return repo != "" && repo != DefaultPanelGitHubRepository
+}
+
 // QuotaExceeded defines the behavior when API quota limits are exceeded.
 // It provides configuration options for automatic failover mechanisms.
 type QuotaExceeded struct {
