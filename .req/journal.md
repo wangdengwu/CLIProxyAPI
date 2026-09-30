@@ -559,3 +559,27 @@ Owed。Task 2（默认路径关掉后台 updater）；以及本 PRD 唯一的人
 既有问题，与本次无关：`internal/api/server.go` 的 gofmt 违规（HEAD 即违规，`_ "embed"` 导入
 位置错放，未触碰）；`internal/api/handlers/management` 在 `-race` 整包跑下 4 个 Delete*Key
 测试竞态失败（已用 git stash 在 HEAD 上复现）。
+
+## 2026-09-30 · task-complete · Task 2 默认路径关掉后台面板更新器
+
+`runOnce` 里既有的三处提前返回连同新增的「逃生舱为空」收敛成
+`panelUpdaterSkipReason(cfg) string`（空串 = 该跑）。示例配置补上 `panel-github-repository`
+条目并修正 `disable-auto-update-panel` 的过时描述。commit 1d960a4b。
+
+**brief 说返回布尔，实现改成返回原因字符串，并写回了 brief。** 既有代码为四个门禁各记一条
+不同的 debug 日志，而这些原因是运营者判断「面板为什么没在刷新」的唯一线索。返回布尔就得在
+调用处再写一遍同样的条件分支来选文案 —— 两份条件必然漂移。**决策与诊断出自同一处**，这是
+比「谓词就该返回 bool」更重要的约束。一般化：当一个判断同时要驱动控制流和解释自己时，让它
+返回原因而不是布尔。
+
+变异检查：删掉新增的那一条 → 恰好两个测试红（无覆盖 + 纯空白覆盖），其余三条仍绿，说明新增
+条件既有效也没有削弱既有门禁。
+
+空白值单独立了一条测试：`"   "` 若被当成覆盖，`resolveReleaseURL` 会回落到默认仓库，于是
+「关掉更新器」这件事被一个看不见的空格悄悄撤销。
+
+文档债顺带还了：`panel-github-repository` 此前在 `config.example.yaml` 里**根本没有条目**，
+而它现在是解钉开关；`disable-auto-update-panel` 的原描述「缺失时首访下载」在默认路径上已
+不成立（Task 1 之后默认路径根本不下载）。
+
+Owed。本 PRD 全部代码切片完成，唯一剩余是部署 + 运营者浏览器往返。
