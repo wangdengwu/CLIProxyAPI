@@ -616,3 +616,15 @@ Task 3 那条教训的同一形状（「改行为前先确认哪条代码路径�
 
 lab 配置走 PGSTORE（`PGSTORE_DSN`/`PGSTORE_SCHEMA`），无 configmap/config 卷，管理密钥也不在
 env 里 —— 所以无法用「让运营者清掉这个 key」绕过，只能在代码里修。这也反过来说明判据选对了。
+
+## 2026-09-30 · verify-evidence · 运营者浏览器验证通过（v2026.9.30.1）
+
+运营者在 lab v2026.9.30.1 上打开 `https://gemini.lab.sayweee.net/management.html#/login`
+完成浏览器往返，确认「人工确认 ok」。这清掉了本 PRD 唯一 owed 的人工验证：内置的 v1.24.2
+面板对着我们这条 v6.10.9 血统的 `/v0/management` API 功能完好，登录与日常操作正常。
+
+这也是自动化证明不了的那一件事 —— 所有 Go 测试只能证明「下发的字节是内置资产、且它说 v0
+不说 v8」，证明不了这个面板的每个功能在我们这套 v0 端点上都还能跑。
+
+PRD 2026-09-30-pin-management-panel-asset 的 2 个切片交付并验证完毕，另加一次部署后修正
+（v2026.9.30 空转 → v2026.9.30.1）。

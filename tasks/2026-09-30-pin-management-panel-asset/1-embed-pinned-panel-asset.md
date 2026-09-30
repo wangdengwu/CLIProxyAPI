@@ -7,6 +7,11 @@ category: bug
 blocked_by: []
 ---
 
+> **已验证：** 运营者于 2026-09-30 在 lab v2026.9.30.1 上完成浏览器往返确认。注意首次发版
+> v2026.9.30 是空转的 —— `LoadConfig` 会把空的 `panel-github-repository` 回填成默认仓库，
+> 「空串 = 用内置」的判据在真实配置下永不成立；已改为 `PanelRepositoryOverridden()`
+> （设了且不等于默认仓库），见 commit 44694eff。
+
 ## What to build
 
 运营者打开 `/management.html` 被「当前后端可使用 v0 管理接口，但不支持 v8」拦下，面板整体不可用。原因是该资产每约 3 小时从第三方仓库的 latest release 自动覆盖，而该项目 v1.25.0（2026-09-29）把 API 基址从 `/v0/management` 换成了 `/v8/management`，我们这条 fork 只提供 v0。
