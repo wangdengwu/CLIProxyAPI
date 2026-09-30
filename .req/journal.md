@@ -516,3 +516,46 @@ markup（见 Task 4 记录），浏览器这一跑补上了这个缺口。
 
 PRD 2026-09-16-auth-availability-window 全部 5 个切片交付并验证完毕，知识层已蒸馏
 （ADR 0004 + 3 条新 learnings + 1 条 supersede + CONTEXT.md Available-window 词条）。
+
+## 2026-09-30 · task-complete · Task 1 内置 v1.24.2 面板资产，默认不再下载
+
+`/management.html` 改为 `go:embed` 进二进制，默认路径既不读盘也不联网；配置了
+`panel-github-repository` 才回到老的下载路径。ETag = 钉住版本的 sha256，`If-None-Match`
+命中返 304。新增 `managementPanelSource()` 供启动日志标出面板来源。
+
+**根因不在后端。** 面板是从第三方仓库 latest release 每 3h 自动覆盖的资产；该项目
+v1.25.0（2026-09-29）把 API 基址从 `/v0/management` 换成 `/v8/management`，我们这条 fork
+分自上游 v6.10.9、只有 v0，于是运营界面一夜变砖。查上游 v8.0.4 确认 v8 管理面是重新分组的
+façade（`/credentials`、`/observability/*`、`/routing/*`、`/plugins/*`），credentials/logs/usage
+复用同一批 handler，但 `ConfigV8` 吃的是 v8 新 YAML 配置树（`NormalizeConfigLayout`）——
+这是大版本重构的核心，不可能便宜地在 v6 上补出来。**注意上游 v8.0.4 仍然同时提供
+`/v0/management`**，所以 v0 契约没死，钉死是安全的。
+
+**先设计成「钉死 URL 仍旧下载」，被自己推翻。** 换钉子照样要改常量发版，敏捷性一点没买到，
+却留着一个只在最需要时才失效的运行时依赖（上游删 release / 出网被掐 / pod 重建撞上下载失败
+→ 面板从「旧了」变成「没了」）。而且那个方案必须同时禁用 fallback 页
+（`cpamc.router-for.me` 永远是最新版，不堵就漏钉子），等于亲手拆掉最后一条退路。改成内置后
+这一整类失效模式消失，且设计本身大幅简化：hash 比对 / 原子写盘 / digest 校验 / fallback 分支
+在默认路径上全部不存在。教训：**为一个固定值保留网络获取，是纯亏损。**
+
+**gin 的 ResponseWriter 缓冲状态码。** 304 测试一开始红在「status = 200」——
+`c.Writer.WriteHeader(304)` 只记录不落盘，要等 engine 在 handler 之后调 `WriteHeaderNow()`。
+用 `gin.CreateTestContext` 裸驱动 handler 的测试（既有 `usage_mode_panel_test.go` 的做法）
+看不到任何无 body 的状态码。解法不是补 `WriteHeaderNow()`，而是**所有断言都过真实 gin
+engine**（`engine.ServeHTTP`），顺带消掉整类脚手架产物。下次写 304/204/206 的测试直接这么做。
+
+**断言的鉴别力用真实文件证明，不是变异。** `v0 present && v8 absent` 这条，拿 lab 上那份坏掉的
+v1.25.0 对比：它含 3 处 `/v8/management`，内置的 v1.24.2 含 0 处。真实的两个文件能被这条断言
+分开，比任何合成变异都强。另外两处做了变异检查：删 ETag → 304 测试红；分支强制走内置 →
+逃生舱测试红。后者顺带暴露一个测试质量问题：失败时把 2.7MB body 整个打进输出，已改成截断。
+
+**体积取舍的一个反直觉点**：资产 2,767,070 字节、gzip 后 884,642。存原始还是存 gzip 进仓库
+**体积相同**（git 本就 zlib 压缩 blob），所以存原始、不引入解压逻辑。二进制涨 2.7MB（Go 原样嵌入）。
+
+Owed。Task 2（默认路径关掉后台 updater）；以及本 PRD 唯一的人工验证 —— 部署后运营者浏览器
+往返确认 v1.24.2 对我们这条 v6.10.9 血统的 v0 API 功能完好（它在 2026-09-22 至 09-29 期间
+就是 lab 上跑着并可用的那一版，这是最强先验，但仍需实跑）。
+
+既有问题，与本次无关：`internal/api/server.go` 的 gofmt 违规（HEAD 即违规，`_ "embed"` 导入
+位置错放，未触碰）；`internal/api/handlers/management` 在 `-race` 整包跑下 4 个 Delete*Key
+测试竞态失败（已用 git stash 在 HEAD 上复现）。
