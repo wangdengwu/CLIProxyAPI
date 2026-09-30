@@ -51,6 +51,26 @@ var indexHTMLTemplate string
 //go:embed usage-mode.html
 var usageModeHTML string
 
+// The management control panel ships inside the binary rather than being fetched from the
+// external control-panel project's latest release. That project's v1.25.0 moved its API base
+// from /v0/management to /v8/management, which this backend does not serve, and the asset
+// auto-updater installed it without any release on our side — turning the operator UI into a
+// brick. Shipping a known-good build with our own version makes the panel version a
+// build-time decision: it cannot change without a commit, and it survives an unreachable
+// GitHub, a deleted release, or a freshly recreated pod.
+//
+//go:embed management.html
+var managementPanelHTML string
+
+const (
+	// pinnedManagementPanelVersion is the Cli-Proxy-API-Management-Center release the
+	// embedded asset was taken from. Bumping it requires re-vendoring management.html.
+	pinnedManagementPanelVersion = "v1.24.2"
+	// pinnedManagementPanelSHA256 is the digest of that release's management.html, checked
+	// against the embedded bytes by test and served as the panel's ETag.
+	pinnedManagementPanelSHA256 = "51b24db8170a5414875602c2f4e35017185b1c1dd7e9a6b1c0de69905a81e997"
+)
+
 const oauthCallbackSuccessHTML = `<html><head><meta charset="utf-8"><title>Authentication successful</title><script>setTimeout(function(){window.close();},5000);</script></head><body><h1>Authentication successful!</h1><p>You can close this window.</p><p>This window will close automatically in 5 seconds.</p></body></html>`
 
 type serverOptionConfig struct {
@@ -277,6 +297,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		authManager.SetRetryConfig(cfg.RequestRetry, time.Duration(cfg.MaxRetryInterval)*time.Second, cfg.MaxRetryCredentials)
 	}
 	managementasset.SetCurrentConfig(cfg)
+	log.Infof("management control panel source: %s", managementPanelSource(cfg))
 	auth.SetQuotaCooldownDisabled(cfg.DisableCooling)
 	applySignatureCacheConfig(nil, cfg)
 	// Initialize management handler
@@ -691,6 +712,15 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
+	// Default: hand out the build-time asset. Nothing is read from disk and nothing is
+	// downloaded, so a stale copy left behind by an earlier auto-update is simply ignored.
+	if strings.TrimSpace(cfg.RemoteManagement.PanelGitHubRepository) == "" {
+		s.serveEmbeddedManagementPanel(c)
+		return
+	}
+
+	// Escape hatch: an explicit panel repository means "track that repository's latest
+	// release", which is the pre-pinning behaviour, download path and all.
 	filePath := managementasset.FilePath(s.configFilePath)
 	if strings.TrimSpace(filePath) == "" {
 		c.AbortWithStatus(http.StatusNotFound)
@@ -713,6 +743,29 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 	}
 
 	c.File(filePath)
+}
+
+// managementPanelSource describes where the control panel served to operators comes from.
+// The panel version is otherwise invisible at runtime, which is exactly how an unnoticed
+// auto-update was able to swap in an incompatible panel; this string is logged at startup.
+func managementPanelSource(cfg *config.Config) string {
+	if cfg == nil || cfg.RemoteManagement.DisableControlPanel {
+		return "disabled"
+	}
+	if repo := strings.TrimSpace(cfg.RemoteManagement.PanelGitHubRepository); repo != "" {
+		return fmt.Sprintf("latest release of %s (auto-update)", repo)
+	}
+	return fmt.Sprintf("built-in %s", pinnedManagementPanelVersion)
+}
+
+// serveEmbeddedManagementPanel writes the built-in control panel asset. http.ServeContent is
+// used purely for its conditional-request handling: the asset is ~2.7MB and never changes
+// within a build, so the digest makes a perfect strong validator and repeat visits collapse
+// to a 304. The zero modtime suppresses Last-Modified, which would otherwise vary per build.
+func (s *Server) serveEmbeddedManagementPanel(c *gin.Context) {
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.Header("ETag", `"`+pinnedManagementPanelSHA256+`"`)
+	http.ServeContent(c.Writer, c.Request, managementasset.ManagementFileName, time.Time{}, strings.NewReader(managementPanelHTML))
 }
 
 // serveUsageModePanel serves the embedded operator companion page for setting a Claude
