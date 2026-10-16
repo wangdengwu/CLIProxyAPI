@@ -475,6 +475,11 @@
   loadBtn.addEventListener("click", loadAccounts);
   refreshBtn.addEventListener("click", loadAccounts);
   tokenEl.addEventListener("keydown", function (e) { if (e.key === "Enter") { loadAccounts(); } });
+  // Save the listener-bound reference so the pin-column wrapper below can
+  // call the original AND chain in fetchPinStatesAndApply. Reassigning
+  // loadAccounts AFTER these listeners won't change what they call —
+  // they captured the function reference at addEventListener time.
+  var origLoadAccountsForListener = loadAccounts;
 
   // ---- Companion lock + lowest-priority column ----
   // Companion key is a SEPARATE localStorage entry from the management key —
@@ -693,12 +698,18 @@
   }
 
   // Existing loadAccounts ends by rendering the table; patch in the pin
-  // column on its tail.
-  var origLoadAccounts = loadAccounts;
+  // column on its tail. We re-bind the buttons so the wrapper is what
+  // the click handlers call (the original addEventListener captured the
+  // un-wrapped reference — see the comment where it's saved above).
+  var origLoadAccounts = origLoadAccountsForListener;
   loadAccounts = function () {
     origLoadAccounts();
     fetchPinStatesAndApply();
   };
+  loadBtn.removeEventListener("click", origLoadAccounts);
+  refreshBtn.removeEventListener("click", origLoadAccounts);
+  loadBtn.addEventListener("click", loadAccounts);
+  refreshBtn.addEventListener("click", loadAccounts);
 
   // Boot: probe lock state, then run the management-aware flow.
   probeLockState();

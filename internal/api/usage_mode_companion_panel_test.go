@@ -172,3 +172,39 @@ func TestServeUsageModePanel_401FallsBackToReload(t *testing.T) {
 		t.Fatalf("body missing location.reload()")
 	}
 }
+
+// The "Lowest" column toggles get filled in by applyPinStates, which is only
+// reachable from the wrapper that loads the management table. If that wrapper
+// is dropped (because the addEventListener captures the un-wrapped reference
+// and a later `loadAccounts = …` reassignment does nothing), the column
+// stays on the em-dash placeholder and the feature is silently absent.
+//
+// Discriminating assertion: the page must contain BOTH the click-listener
+// registration AND the wrapper re-binding, in that order.
+func TestServeUsageModePanel_PinColumnWrapperBoundToClickHandler(t *testing.T) {
+	s := &Server{cfg: &proxyconfig.Config{}}
+	body := fetchPanelBody(t, s)
+
+	// The wrapper is the second definition that captures the original via
+	// origLoadAccountsForListener and re-binds loadAccounts. The wrapper
+	// pattern only works when removeEventListener comes before the second
+	// addEventListener — without that, the original click listener never
+	// fires the wrapper, and fetchPinStatesAndApply never runs.
+	if !strings.Contains(body, `removeEventListener("click", origLoadAccounts)`) {
+		t.Fatalf("body missing removeEventListener on the click handler — the wrapper cannot be in effect without it")
+	}
+	if !strings.Contains(body, `loadAccounts = function () {`) {
+		t.Fatalf("body missing loadAccounts wrapper")
+	}
+	if !strings.Contains(body, `fetchPinStatesAndApply()`) {
+		t.Fatalf("body missing fetchPinStatesAndApply call inside the wrapper")
+	}
+	// Order matters: origLoadAccounts capture must come AFTER the
+	// addEventListener lines, not before.
+	idxOrigCapture := strings.Index(body, "origLoadAccountsForListener")
+	idxListener := strings.Index(body, `addEventListener("click", loadAccounts)`)
+	if idxOrigCapture < 0 || idxListener < 0 || idxOrigCapture <= idxListener {
+		t.Fatalf("origLoadAccountsForListener must be captured after the click listener registration (idxOrig=%d listenerIdx=%d)",
+			idxOrigCapture, idxListener)
+	}
+}
