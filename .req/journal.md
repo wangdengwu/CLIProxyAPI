@@ -849,3 +849,33 @@ tag 指回 `v2026.9.30.1` 即可，无需重建镜像。
 
 **OWED.** 运营者在 lab v2026.10.16 上浏览器往返（详见 PRD Task 3 verify）。
 通过后追加一条 `verify-evidence` 记录收口。
+
+
+## 2026-10-16 · verify-evidence · v2026.10.16 deployed to lab
+
+**Image.** `wangdengwu/cli-proxy-api:v2026.10.16` (build #38878720359, 2026-10-16 09:13:14Z success)。
+
+**Deploy.** lab context `dengwu.wang-local-lab` ns `gemini`，deployment `cliproxyapi` updated via
+`kubectl diff -f istio/deployment.yaml` (only image tag differed from live v2026.9.30.1) then
+`kubectl apply -f istio/deployment.yaml`. Rollout completed, 1/1 ready.
+
+**Startup log确认关键 probe**（**PRD 2026-09-30 inert-release 陷阱的探针已亮**）:
+
+```
+management control panel source: built-in v1.24.2
+companion page /usage-mode.html is currently unlocked (no companion-secret configured). Set one from the page itself to lock it.
+```
+
+第一条 = 内置面板资产（不是 latest release，跟 PRD 2026-09-30 设计一致）。第二条就是本 PRD 加的「未上锁 → 设锁引导」warn 日志；line 11 的位置是 Task 1 决定的（companion-secret 检查紧贴 panel source 日志之后，让运营者一眼看到「面板来源 + 伴随页门态」）。
+
+**未签发** 任何新镜像 tag。现有 v2026.9.30.1 仍可作为回滚。
+
+**OWED.** 运营者浏览器往返：
+1. `https://gemini.lab.sayweee.net/usage-mode.html` → 看到「未上锁」banner + 「设置锁」表单
+2. 设置一把锁 → reload → companion key 输入框
+3. 输入正确 → 表渲染
+5. 切「始终最后」toggle → 行状态实时更新
+6. manage.html 不可见字段、PATCH 不可写该字段
+7. 更换 / 移除 / 错 key 三态循环
+
+通过后补 verify-evidence 收口；不通过则尾首生成 v2026.10.16.1。
