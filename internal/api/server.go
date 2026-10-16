@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"crypto/tls"
+	_ "embed"
 	"errors"
 	"fmt"
 	"net"
@@ -19,7 +20,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	_ "embed"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/access"
@@ -298,6 +298,10 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	}
 	managementasset.SetCurrentConfig(cfg)
 	log.Infof("management control panel source: %s", managementPanelSource(cfg))
+	if strings.TrimSpace(cfg.RemoteManagement.CompanionSecret) == "" {
+		log.Warn("companion page /usage-mode.html is currently unlocked (no companion-secret configured). " +
+			"Set one from the page itself to lock it.")
+	}
 	auth.SetQuotaCooldownDisabled(cfg.DisableCooling)
 	applySignatureCacheConfig(nil, cfg)
 	// Initialize management handler
@@ -369,7 +373,7 @@ func (s *Server) setupRoutes() {
 	s.engine.HEAD("/healthz", healthzHandler)
 
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
-	s.engine.GET("/usage-mode.html", s.serveUsageModePanel)
+	s.engine.GET("/usage-mode.html", s.mgmt.CompanionAuthMiddleware(), s.serveUsageModePanel)
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
 	geminiCLIHandlers := gemini.NewGeminiCLIAPIHandler(s.handlers)
@@ -574,6 +578,11 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.DELETE("/proxy-url", s.mgmt.DeleteProxyURL)
 
 		mgmt.POST("/api-call", s.mgmt.APICall)
+
+		// Companion lock setter. Management-keyed (NOT companion-keyed) so the
+		// operator can set/rotate/remove the lock from the page itself even
+		// when no companion key has ever been configured.
+		mgmt.POST("/companion-secret", s.mgmt.PostCompanionSecret)
 
 		mgmt.GET("/quota-exceeded/switch-project", s.mgmt.GetSwitchProject)
 		mgmt.PUT("/quota-exceeded/switch-project", s.mgmt.PutSwitchProject)

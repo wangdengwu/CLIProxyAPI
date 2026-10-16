@@ -200,6 +200,10 @@ type RemoteManagement struct {
 	AllowRemote bool `yaml:"allow-remote"`
 	// SecretKey is the management key (plaintext or bcrypt hashed). YAML key intentionally 'secret-key'.
 	SecretKey string `yaml:"secret-key"`
+	// CompanionSecret is the key that gates /usage-mode.html and the companion-only endpoints.
+	// Empty (the default) leaves the companion page unlocked — the operator sets one from the
+	// page itself on first install. Plaintext or bcrypt hashed; same handling as SecretKey.
+	CompanionSecret string `yaml:"companion-secret"`
 	// DisableControlPanel skips serving and syncing the bundled management UI when true.
 	DisableControlPanel bool `yaml:"disable-control-panel"`
 	// DisableAutoUpdatePanel disables automatic periodic background updates of the management panel asset from GitHub.
@@ -762,6 +766,19 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		// Persist the hashed value back to the config file to avoid re-hashing on next startup.
 		// Preserve YAML comments and ordering; update only the nested key.
 		_ = SaveConfigPreserveCommentsUpdateNestedScalar(configFile, []string{"remote-management", "secret-key"}, hashed)
+	}
+
+	// Same shape as the management key: a plaintext companion-secret gets hashed
+	// on first load and the hashed value is written back so the next start
+	// does not re-hash. Empty stays empty (the "page unlocked" state is real).
+	if cfg.RemoteManagement.CompanionSecret != "" && !looksLikeBcrypt(cfg.RemoteManagement.CompanionSecret) {
+		hashed, errHash := hashSecret(cfg.RemoteManagement.CompanionSecret)
+		if errHash != nil {
+			return nil, fmt.Errorf("failed to hash companion secret: %w", errHash)
+		}
+		cfg.RemoteManagement.CompanionSecret = hashed
+
+		_ = SaveConfigPreserveCommentsUpdateNestedScalar(configFile, []string{"remote-management", "companion-secret"}, hashed)
 	}
 
 	cfg.RemoteManagement.PanelGitHubRepository = strings.TrimSpace(cfg.RemoteManagement.PanelGitHubRepository)

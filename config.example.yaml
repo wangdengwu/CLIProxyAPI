@@ -22,6 +22,12 @@ remote-management:
   # Leave empty to disable the Management API entirely (404 for all /v0/management routes).
   secret-key: ""
 
+  # Companion key that gates /usage-mode.html (the operator companion page) and the
+  # companion-only endpoints under /v0/management/companion/*. If a plaintext value is
+  # provided here, it will be hashed on startup. Leave empty (the default) to leave the
+  # companion page unlocked on first install — the operator sets one from the page.
+  companion-secret: ""
+
   # Disable the bundled management control panel asset download and HTTP route when true.
   disable-control-panel: false
 
