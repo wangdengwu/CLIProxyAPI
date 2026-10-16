@@ -162,18 +162,123 @@ func (e *modelCooldownError) Headers() http.Header {
 }
 
 func authPriority(auth *Auth) int {
-	if auth == nil || auth.Attributes == nil {
+	if auth == nil {
 		return 0
 	}
-	raw := strings.TrimSpace(auth.Attributes["priority"])
-	if raw == "" {
-		return 0
+	if isPinnedLowest(auth) {
+		// The pin is a Claude-specific absolute floor — even if another
+		// operator later sets some account's priority to a very negative
+		// integer, a pinned account stays at the bottom. Multiple pinned
+		// accounts share the bottom bucket and the scheduler's existing
+		// round-robin within a bucket picks among them.
+		return math.MinInt
 	}
-	parsed, err := strconv.Atoi(raw)
+	base := 0
+	if auth.Attributes != nil {
+		if raw := strings.TrimSpace(auth.Attributes["priority"]); raw != "" {
+			if parsed, err := strconv.Atoi(raw); err == nil {
+				base = parsed
+			}
+		}
+	} else if auth.Metadata != nil {
+		// Some entries (UploadAuthFile path) never go through the synthesizer,
+		// so Attributes is nil. Fall back to Metadata so the long-standing
+		// numeric priority still gets honored.
+		switch v := auth.Metadata["priority"].(type) {
+		case float64:
+			base = int(v)
+		case int:
+			base = v
+		case string:
+			if parsed, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+				base = parsed
+			}
+		}
+	}
+	return base
+}
+
+// isPinnedLowest reports whether the companion page flagged this Claude
+// account as "always picked last". The flag is Claude-only: writing it on a
+// gemini/codex/kimi/antigravity/openai auth has no effect, so it cannot
+// accidentally reorder priority in providers we have no concept for. Both
+// Attributes (the synthesizer path) and Metadata (the UploadAuthFile path) are
+// read so non-synthesized accounts still see the pin.
+func isPinnedLowest(auth *Auth) bool {
+	return IsPinnedToLowest(auth)
+}
+
+// IsPinnedToLowest is the exported counterpart used by the companion endpoints
+// in the management package. Mirrors isPinnedLowest's contract; kept in sync
+// because the function lives behind two call sites (selector + handler) and
+// the brief asks for one source of truth.
+func IsPinnedToLowest(auth *Auth) bool {
+	if auth == nil || auth.Provider != "claude" {
+		return false
+	}
+	if auth.Attributes != nil {
+		if v, ok := parseBoolish(auth.Attributes["claude_pin_to_lowest"]); ok {
+			return v
+		}
+	}
+	if auth.Metadata != nil {
+		if v, ok := parseBoolishFromAny(auth.Metadata["claude_pin_to_lowest"]); ok {
+			return v
+		}
+	}
+	return false
+}
+
+// parseBoolish turns a string-form bool field into (value, present). Empty
+// strings and unparseable bytes return (false, false) so the caller can keep
+// the existing default. Accepts the same shapes strconv.ParseBool does
+// ("true"/"false"/"1"/"0"/"True"/...) so the convention lines up with other
+// bool operator-set-keys.
+func parseBoolish(raw string) (bool, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return false, false
+	}
+	v, err := strconv.ParseBool(trimmed)
 	if err != nil {
-		return 0
+		return false, false
 	}
-	return parsed
+	return v, true
+}
+
+// parseBoolishFromAny is the Metadata-side counterpart: Metadata is
+// map[string]any because it round-trips JSON without a typed schema, so the
+// bool may arrive as a JSON bool, an int, a float, or a string. Anything that
+// isn't a recognisable truthy/falsy value returns (false, false).
+func parseBoolishFromAny(v any) (bool, bool) {
+	switch x := v.(type) {
+	case bool:
+		return x, true
+	case string:
+		return parseBoolish(x)
+	case float64:
+		if x == 1 {
+			return true, true
+		}
+		if x == 0 {
+			return false, true
+		}
+	case int:
+		if x == 1 {
+			return true, true
+		}
+		if x == 0 {
+			return false, true
+		}
+	case int64:
+		if x == 1 {
+			return true, true
+		}
+		if x == 0 {
+			return false, true
+		}
+	}
+	return false, false
 }
 
 func canonicalModelKey(model string) string {

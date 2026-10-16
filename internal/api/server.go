@@ -703,6 +703,19 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.POST("/oauth-callback", s.mgmt.PostOAuthCallback)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
 	}
+
+	// Companion-only endpoints. Gated by CompanionAuthMiddleware only
+	// (NOT management middleware) so the operator can drive them from the
+	// companion page with just the companion key — a holder of the
+	// management key alone cannot change pin state. Subtree is intentionally
+	// scoped so the management plane's heavy endpoints (config, logs,
+	// oauth, ...) stay inaccessible to a stolen companion key.
+	companion := s.engine.Group("/v0/management/companion")
+	companion.Use(s.mgmt.CompanionAuthMiddleware())
+	{
+		companion.GET("/claude-pin-states", s.mgmt.GetCompanionClaudePinStates)
+		companion.POST("/claude-pin-states/:id", s.mgmt.PostCompanionClaudePinState)
+	}
 }
 
 func (s *Server) managementAvailabilityMiddleware() gin.HandlerFunc {
