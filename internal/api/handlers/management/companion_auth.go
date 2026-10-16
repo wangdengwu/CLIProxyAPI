@@ -2,6 +2,7 @@ package management
 
 import (
 	"crypto/subtle"
+	"encoding/base64"
 	"net/http"
 	"strings"
 
@@ -31,15 +32,44 @@ func (h *Handler) CompanionAuthMiddleware() gin.HandlerFunc {
 
 // extractCompanionKey pulls the companion secret from the request. The
 // companion key is set by an operator in their browser and held in
-// localStorage, so we accept the same two header shapes the management key
-// uses (Bearer token or X-Companion-Key) for symmetry — the page's JS picks
-// one and stays on it.
+// localStorage, so we accept three header shapes:
+//
+//  1. Authorization: Bearer <secret>        — the page JS sends this from localStorage
+//  2. X-Companion-Key: <secret>            — same idea, different header name
+//  3. Authorization: Basic <base64(u:p)>    — the browser's native auth dialog sends
+//     this when the page is opened directly and a lock is in place; the user
+//     types "any username" / "the companion key" and the password portion is
+//     what we compare. Failing to support Basic here turns a forgotten key
+//     into "the page just won't load" with no recovery UI.
+//
+// For Basic, we split on the LAST ':' to honor passwords that contain colons;
+// the username portion is ignored by design — there is no per-user identity
+// at the companion secret layer.
 func extractCompanionKey(c *gin.Context) string {
 	if ah := c.GetHeader("Authorization"); ah != "" {
 		parts := strings.SplitN(ah, " ", 2)
-		if len(parts) == 2 && strings.ToLower(parts[0]) == "bearer" {
+		if len(parts) == 2 && strings.EqualFold(parts[0], "bearer") {
 			return strings.TrimSpace(parts[1])
 		}
+		if len(parts) == 2 && strings.EqualFold(parts[0], "basic") {
+			if raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(parts[1])); err == nil {
+				creds := string(raw)
+				// Per RFC 7617: split on the FIRST colon. The user-id cannot
+				// contain a colon (so the first colon is the separator), and
+				// the password may freely contain colons — everything after
+				// the first colon is the password portion. If there is no
+				// colon at all, treat the whole decoded value as the secret
+				// (the username field was left empty).
+				if idx := strings.Index(creds, ":"); idx >= 0 {
+					return strings.TrimSpace(creds[idx+1:])
+				}
+				return strings.TrimSpace(creds)
+			}
+			return ""
+		}
+		// Unknown scheme — fall back to the whole value so a custom
+		// Authorization header still has a chance to match (and fail
+		// closed via bcrypt compare) instead of silently bypassing.
 		return strings.TrimSpace(ah)
 	}
 	if x := c.GetHeader("X-Companion-Key"); x != "" {
