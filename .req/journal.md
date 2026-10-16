@@ -628,3 +628,66 @@ env 里 —— 所以无法用「让运营者清掉这个 key」绕过，只能�
 
 PRD 2026-09-30-pin-management-panel-asset 的 2 个切片交付并验证完毕，另加一次部署后修正
 （v2026.9.30 空转 → v2026.9.30.1）。
+
+
+## 2026-10-16 · task-complete · Task 1 (companion lock + setter)
+
+**Built.** `CompanionAuthMiddleware` + `AuthenticateCompanionKey` in
+`internal/api/handlers/management/companion_auth.go` (new file), wired into
+`/usage-mode.html`; `POST /v0/management/companion-secret` in
+`internal/api/handlers/management/companion_secret.go` (new file), routes under
+the existing `/v0/management` group behind the management middleware (NOT
+companion middleware); `RemoteManagement.CompanionSecret` field + LoadConfig
+hash-on-load block in `internal/config/config.go`; `companion-secret` entry in
+`config.example.yaml`; startup warn log in `internal/api/server.go` when the
+companion secret is empty.
+
+**Behavior contracts verified by 9 red-green cycles + 4 mutations**:
+
+| Behavior | Test | Mutation caught |
+|---|---|---|
+| CompanionAuthMiddleware empty secret passthrough | `TestCompanionAuthMiddleware_EmptySecret_PassesThrough` | force-bypass branch |
+| CompanionAuthMiddleware wrong bearer → 401 + WWW-Authenticate | `..._NonEmpty_WrongBearer_...` | delete WWW-Authenticate header |
+| CompanionAuthMiddleware missing header → 401 | `..._NonEmpty_NoHeader_...` | delete WWW-Authenticate |
+| CompanionAuthMiddleware correct bearer → 200 | `..._NonEmpty_CorrectBearer_...` | force-bypass |
+| CompanionAuthMiddleware X-Companion-Key → 200 | `..._NonEmpty_CorrectXCompanionKey_...` | force-bypass |
+| CompanionAuthMiddleware bcrypt stored + plaintext caller → 200 | `..._NonEmpty_BcryptStored_...` | skip bcrypt branch |
+| LoadConfig plaintext → bcrypt + persist | `TestLoadConfig_CompanionSecret_HashesPlaintextOnFirstLoad` | delete hash block |
+| LoadConfig bcrypt → no-op | `..._LeavesBcryptAlone` | rehash bcrypt |
+| LoadConfig empty → stays empty | `..._EmptyStaysEmpty` | hash empty string |
+| Endpoint first-set + hash + persist + hot-reload | `TestPostCompanionSecret_FirstTimeSet_...` | skip hot-reload, skip hash |
+| Endpoint overwrite requires correct current_secret | `..._OverwriteWithCorrectCurrent` | skip current_secret check |
+| Endpoint wrong current → 400 + disk unchanged | `..._WrongCurrent_...` | skip current_secret check |
+| Endpoint clear (current + empty new) → unlock | `..._ClearWithCurrent_...` | skip current_secret check |
+| Endpoint requires management key, NOT companion key | `..._RequiresManagementKey` | wire companion middleware in |
+| hashForStorage always bcrypt-or-empty | `TestHashForStorage_AlwaysBcryptOrEmpty` | skip hash |
+
+**Key design decisions**:
+
+- Default-empty companion secret is a real production state (first-run install), not
+  a test convenience. Startup warn log keeps it observable. This is the opposite of
+  `disable-control-panel` (which defaults OFF).
+- Middleware is empty-secret-passthrough, NOT disabled-flag-default. Mirrors the
+  existing convention where secret-key being empty disables the entire management
+  plane; here the secret-key can still be set (page is reachable), only the companion
+  gate is open.
+- The setter endpoint is management-keyed, NOT companion-keyed — a phished
+  companion key must not be able to remove its own gate. Mirrors how the management
+  secret-key rotation works.
+- Hot-reload uses LoadConfig + pointer swap (PutConfigYAML pattern), not
+  write-only-when-needed. The first-time test does NOT call SetConfig from the test
+  side — the endpoint must reload itself, otherwise the live middleware still gates
+  the page with the OLD empty value and the test catches it.
+
+**Coupling for rollback** (PRD Unit-2 dependency): Task 2 will mount companion
+endpoints via the same `CompanionAuthMiddleware`. A standalone revert of Task 1
+without Task 2 leaves orphan middleware (harmless); a standalone keep of Task 2
+without Task 1 leaves companion endpoints ungated (security incident). Order of
+rollback: Task 2 → Task 1.
+
+**Owed.** Lab v2026.10.x deployment + operator browser round-trip (per PRD verify
+chain). Code path is verified; lab-side proves end-to-end behavior the page JS
+relies on.
+
+**Pre-existing, untouched:** `TestCodexFreeModelsExcludeGPT55` in `internal/registry`
+fails on the bare branch (verified via git stash) — unrelated to this PRD.
