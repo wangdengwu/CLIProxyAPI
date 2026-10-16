@@ -70,6 +70,23 @@
   <h1>Claude Usage Mode</h1>
   <p class="sub">Operator panel — set a Claude account to <b>shared</b> (throttled to preserve reserve) or <b>dedicated</b> (never throttled), and load each account's 5-hour / 7-day usage on demand. Switching to dedicated also lifts any active rate-limit block immediately.</p>
 
+  <div class="card" id="lockCard">
+    <div class="row" style="justify-content: space-between; margin-bottom: 6px;">
+      <label style="margin:0;">Companion lock</label>
+      <span id="lockBadge" class="badge"></span>
+    </div>
+    <div id="lockBody"></div>
+  </div>
+
+  <div class="card" id="companionKeyCard" style="display:none">
+    <label for="companionToken">Companion key</label>
+    <div class="row">
+      <input id="companionToken" type="password" placeholder="required to view locked pages" autocomplete="off">
+      <button id="unlock" class="ghost">Unlock</button>
+    </div>
+    <div class="hint">Stored only in this browser (localStorage). Sent as <code>Authorization: Bearer …</code> for companion endpoints.</div>
+  </div>
+
   <div class="card">
     <label for="token">Management key</label>
     <div class="row">
@@ -284,7 +301,7 @@
         '</select>';
       // Usage is NOT auto-fetched — one click per account, on demand, so opening the page
       // does not fan out a request to every account (which itself can trip rate limits).
-      return '<tr>' +
+      return '<tr data-id="' + idAttr + '">' +
         '<td class="acct">' + escapeHtml(label) +
           (label !== (e.name || id) ? '<small>' + escapeHtml(e.name || id) + '</small>' : '') + '</td>' +
         (ai
@@ -294,10 +311,11 @@
         '<td>' + badge + '</td>' +
         '<td>' + sel + '</td>' +
         '<td class="window">' + windowCell(idAttr, e.available_window, e.available_now, e.next_open_at) + '</td>' +
+        '<td class="pin"><span class="na">—</span></td>' +
       '</tr>';
     }).join("");
     host.innerHTML =
-      '<table><thead><tr><th>Account</th><th>5h</th><th>7d</th><th>Current</th><th>Set to</th><th>Window</th></tr></thead>' +
+      '<table><thead><tr><th>Account</th><th>5h</th><th>7d</th><th>Current</th><th>Set to</th><th>Window</th><th>Lowest</th></tr></thead>' +
       '<tbody>' + rows + '</tbody></table>';
 
     Array.prototype.forEach.call(host.querySelectorAll("select"), function (s) {
@@ -457,6 +475,233 @@
   loadBtn.addEventListener("click", loadAccounts);
   refreshBtn.addEventListener("click", loadAccounts);
   tokenEl.addEventListener("keydown", function (e) { if (e.key === "Enter") { loadAccounts(); } });
+
+  // ---- Companion lock + lowest-priority column ----
+  // Companion key is a SEPARATE localStorage entry from the management key —
+  // they live on different threat surfaces and must never overwrite each other.
+  var COMPANION_TOKEN_KEY = "cpa-companion-key";
+  var MANAGEMENT_TOKEN_KEY = "cliproxy.mgmtKey";
+  var lockCard = $("lockCard");
+  var lockBody = $("lockBody");
+  var lockBadge = $("lockBadge");
+  var companionKeyCard = $("companionKeyCard");
+  var companionTokenEl = $("companionToken");
+  var unlockBtn = $("unlock");
+
+  function companionHeaders() {
+    var k = (localStorage.getItem(COMPANION_TOKEN_KEY) || "").trim();
+    var h = { "Content-Type": "application/json" };
+    if (k) { h["Authorization"] = "Bearer " + k; }
+    return h;
+  }
+  function managementHeaders() {
+    var k = token();
+    var h = { "Content-Type": "application/json" };
+    if (k) { h["Authorization"] = "Bearer " + k; }
+    return h;
+  }
+
+  // The lock state machine is driven by a single probe: GET the companion
+  // pin-states endpoint. 200 ⇒ open mode (whether or not we hold a key);
+  // 401 ⇒ locked mode. The companion key we carry decides whether we are
+  // unlocked-with-key or locked-no-key.
+  function probeLockState() {
+    fetch("/v0/management/companion/claude-pin-states", { headers: companionHeaders() })
+      .then(function (r) {
+        var haveCompanionKey = !!((localStorage.getItem(COMPANION_TOKEN_KEY) || "").trim());
+        if (r.status === 200) {
+          return { mode: haveCompanionKey ? "unlocked-with-key" : "unlocked-not-set" };
+        }
+        if (r.status === 401 || r.status === 403) {
+          return { mode: "locked-no-key" };
+        }
+        // 5xx or other — show empty/reset state so operator isn't stuck
+        return { mode: haveCompanionKey ? "unlocked-not-set" : "locked-no-key", degraded: true };
+      })
+      .then(renderLockCard);
+  }
+
+  function renderLockCard(state) {
+    if (state.degraded) {
+      lockBadge.textContent = "⚠ degraded";
+      lockBadge.className = "badge";
+    } else if (state.mode === "unlocked-not-set") {
+      lockBadge.textContent = "unlocked";
+      lockBadge.className = "badge shared";
+    } else if (state.mode === "locked-no-key") {
+      lockBadge.textContent = "locked";
+      lockBadge.className = "badge dedicated";
+    } else {
+      lockBadge.textContent = "unlocked";
+      lockBadge.className = "badge shared";
+    }
+    companionKeyCard.style.display = (state.mode === "locked-no-key") ? "" : "none";
+    // Hide the table when locked-no-key — the page shouldn't render Claude
+    // account controls until the operator unlocks.
+    var tableCard = document.querySelector(".card:nth-of-type(3)");
+    if (state.mode === "locked-no-key") {
+      tableCard.style.display = "none";
+    } else {
+      tableCard.style.display = "";
+    }
+
+    if (state.mode === "unlocked-not-set") {
+      lockBody.innerHTML =
+        '<p class="hint">This page is currently unlocked. Anyone with the URL can see Claude accounts and toggle pins. Set a lock to restrict access.</p>' +
+        '<div class="row" style="margin-top: 6px;">' +
+          '<input id="newLock" type="password" placeholder="new companion key">' +
+          '<input id="newLockConfirm" type="password" placeholder="confirm">' +
+          '<button id="saveLock">Set lock</button>' +
+        '</div>' +
+        '<div class="msg err" id="lockMsg"></div>';
+      $("saveLock").addEventListener("click", function () { submitLock(false); });
+    } else if (state.mode === "unlocked-with-key") {
+      lockBody.innerHTML =
+        '<p class="hint">Page is unlocked. Change or remove the lock below.</p>' +
+        '<div class="row" style="margin-top: 6px;">' +
+          '<input id="currentLock" type="password" placeholder="current key (required for remove)">' +
+          '<input id="newLock" type="password" placeholder="new key">' +
+          '<input id="newLockConfirm" type="password" placeholder="confirm">' +
+          '<button id="changeLock">Change</button>' +
+          '<button id="removeLock" class="ghost">Remove lock</button>' +
+        '</div>' +
+        '<div class="msg err" id="lockMsg"></div>';
+      $("changeLock").addEventListener("click", function () { submitLock(false); });
+      $("removeLock").addEventListener("click", function () { submitLock(true); });
+    } else if (state.mode === "locked-no-key") {
+      // Companion key input is its own card; nothing extra here.
+      lockBody.innerHTML = '<p class="hint">Page is locked. Enter the companion password above to unlock.</p>';
+    }
+  }
+
+  function submitLock(remove) {
+    var newKey = ($("newLock") ? $("newLock").value : "").trim();
+    var confirm = ($("newLockConfirm") ? $("newLockConfirm").value : "").trim();
+    var current = ($("currentLock") ? $("currentLock").value : "").trim();
+    var msg = $("lockMsg");
+    msg.className = "msg err";
+    msg.textContent = "";
+    if (remove) {
+      if (!current) { msg.textContent = "current key required"; return; }
+      newKey = "";
+      confirm = "";
+    } else {
+      if (!newKey) { msg.textContent = "new key required"; return; }
+      if (newKey !== confirm) { msg.textContent = "keys do not match"; return; }
+    }
+    fetch("/v0/management/companion-secret", {
+      method: "POST",
+      headers: managementHeaders(),
+      body: JSON.stringify({ current_secret: current, new_secret: newKey })
+    })
+      .then(function (r) {
+        if (!r.ok) {
+          return r.json().catch(function () { return {}; }).then(function (b) {
+            throw new Error(b.error || ("HTTP " + r.status));
+          });
+        }
+        return r.json().catch(function () { return {}; });
+      })
+      .then(function () {
+        if (remove) {
+          localStorage.removeItem(COMPANION_TOKEN_KEY);
+        } else {
+          localStorage.setItem(COMPANION_TOKEN_KEY, newKey);
+        }
+        // Reload so the new state is enforced by CompanionAuthMiddleware on
+        // the very next request.
+        location.reload();
+      })
+      .catch(function (err) { msg.textContent = err.message || String(err); });
+  }
+
+  function unlockWithCompanion() {
+    var v = (companionTokenEl.value || "").trim();
+    if (!v) { return; }
+    localStorage.setItem(COMPANION_TOKEN_KEY, v);
+    // Reload — middleware either accepts the new key (page unlocks) or
+    // rejects it (we land back in locked-no-key and the user can retry).
+    location.reload();
+  }
+  if (unlockBtn) { unlockBtn.addEventListener("click", unlockWithCompanion); }
+  if (companionTokenEl) {
+    companionTokenEl.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { unlockWithCompanion(); }
+    });
+    try { companionTokenEl.value = localStorage.getItem(COMPANION_TOKEN_KEY) || ""; } catch (e) {}
+  }
+
+  // ---- Pin-to-lowest: merge into the existing rows after management load ----
+  function applyPinStates(pinStates) {
+    var byID = {};
+    (pinStates || []).forEach(function (p) { byID[p.auth_id] = p.pinned_to_lowest; });
+    Array.prototype.forEach.call(host.querySelectorAll("tr[data-id]"), function (tr) {
+      var id = decodeURIComponent(tr.getAttribute("data-id"));
+      var cell = tr.querySelector("td.pin");
+      if (!cell) { return; }
+      var pinned = !!byID[id];
+      cell.innerHTML =
+        '<label class="row" style="gap:6px;">' +
+          '<input type="checkbox" data-pin="' + encodeURIComponent(id) + '"' +
+            (pinned ? ' checked' : '') + '>' +
+          '<span class="hint" style="font-size:11px">always last</span>' +
+        '</label>';
+    });
+    Array.prototype.forEach.call(host.querySelectorAll("input[data-pin]"), function (cb) {
+      cb.addEventListener("change", function () { togglePin(cb); });
+    });
+  }
+
+  function togglePin(cb) {
+    var id = decodeURIComponent(cb.getAttribute("data-pin"));
+    var want = cb.checked;
+    cb.disabled = true;
+    fetch("/v0/management/companion/claude-pin-states/" + encodeURIComponent(id), {
+      method: "POST",
+      headers: companionHeaders(),
+      body: JSON.stringify({ pinned_to_lowest: want })
+    })
+      .then(function (r) {
+        if (!r.ok) {
+          return r.json().catch(function () { return {}; }).then(function (b) {
+            throw new Error(b.error || ("HTTP " + r.status));
+          });
+        }
+        // 401 means the companion key is gone — fall back to locked-no-key
+        if (r.status === 401) {
+          localStorage.removeItem(COMPANION_TOKEN_KEY);
+          location.reload();
+          return;
+        }
+        return r.json().catch(function () { return {}; });
+      })
+      .catch(function (err) {
+        cb.checked = !want;
+        setMsg(err.message || String(err), "err");
+      })
+      .then(function () { cb.disabled = false; });
+  }
+
+  function fetchPinStatesAndApply() {
+    fetch("/v0/management/companion/claude-pin-states", { headers: companionHeaders() })
+      .then(function (r) {
+        if (!r.ok) { return { states: [] }; }
+        return r.json();
+      })
+      .then(function (data) { applyPinStates((data && data.states) || []); })
+      .catch(function () { applyPinStates([]); });
+  }
+
+  // Existing loadAccounts ends by rendering the table; patch in the pin
+  // column on its tail.
+  var origLoadAccounts = loadAccounts;
+  loadAccounts = function () {
+    origLoadAccounts();
+    fetchPinStatesAndApply();
+  };
+
+  // Boot: probe lock state, then run the management-aware flow.
+  probeLockState();
 })();
 </script>
 </body>
