@@ -879,3 +879,48 @@ companion page /usage-mode.html is currently unlocked (no companion-secret confi
 7. 更换 / 移除 / 错 key 三态循环
 
 通过后补 verify-evidence 收口；不通过则尾首生成 v2026.10.16.1。
+
+## 2026-10-16 · verify-evidence · companion-secret emergency reset on lab
+
+**场景：** 运营者在浏览器上设了 companion key 后忘记原值，被锁在 page 外。Postgres-backed 部署让「忘了就完了」从单机 /yaml 场景升级为「在 PG 里改 schema + bounce」。
+
+**Recovery path** (run from operator's machine):
+
+```bash
+# 1. 起一个一次性 pod 带 psql（pod 命名带随机后缀避免冲突）
+kubectl --context dengwu.wang-local-lab run pg-tool-$RANDOM --image=alpine:3.20 \
+  -n gemini --command -- sleep 3600
+# 等 ready 后装 psql
+kubectl --context dengwu.wang-local-lab exec pod/pg-tool-$RANDOM -n gemini -- \
+  apk add --no-cache postgresql-client
+
+# 2. UPDATE config_store，正则把 companion-secret 那行的值清空，保留 key 名
+kubectl --context dengwu.wang-local-lab exec pod/pg-tool-$RANDOM -n gemini -- \
+  sh -c "PGPASSWORD=Wn72VDLR4UlbOiLx psql -h 10.202.30.13 -U gemini -d gemini -c \
+    \"UPDATE config_store SET content = regexp_replace(content, \
+      '(  companion-secret:[ ]*)[^\\n]*', '\\1', 'g') \
+     WHERE id = 'config';\""
+
+# 3. bounce pod 让 LoadConfig 读新值
+kubectl --context dengwu.wang-local-lab -n gemini rollout restart deploy/cliproxyapi
+```
+
+**关键发现：** bcrypt 是单向的，**没有任何后端路径能恢复原值**。Recovery 路径永远是「清掉重来」，不是「重设」。这条 PRD 没写进 brief，是个教训。
+
+**Follow-up (PRD 候选)**：
+
+1. 在 CONTEXT.md Companion-secret 条目加一句「单向 hash、原值不可逆、清掉只能上容器清空」的明确提醒
+2. 可选的 emergency-reset 端点要补：但这会被任何人凭 management key 调，是安全 vs 可用性权衡，建议不加
+
+**当前状态：**
+
+- 页面 open，warn 日志恢复：
+
+  ```
+  companion page /usage-mode.html is currently unlocked (no companion-secret configured). Set one from the page itself to lock it.
+  ```
+
+- curl https://gemini.lab.sayweee.net/usage-mode.html → 200
+- v2026.10.16 镜像未变（仍是发布版本，未发 v2026.10.16.1）
+
+**OWED (浏览器验收)**：你重新验证一次完整流程（这次请记住 companion key 是什么）。
