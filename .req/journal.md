@@ -755,3 +755,58 @@ selector ordering. End-to-end behavior the page JS relies on (Task 3).
 Task 1. Standalone revert of Task 2 keeps Task 1s CompanionAuthMiddleware
 unused but harmless; standalone keep of Task 2 without Task 1 leaves companion
 endpoints ungated.
+
+
+## 2026-10-16 · task-complete · Task 3 (usage-mode.html UI)
+
+**Built.** Three new operator surfaces on the embedded usage-mode.html:
+
+- **Lock state card** at the top of the page: three states driven by a
+  single GET probe of `/v0/management/companion/claude-pin-states` —
+  200 ⇒ open, 401 ⇒ locked. The companion-key slot in `localStorage`
+  decides `unlocked-not-set` vs `unlocked-with-key`. The card renders
+  set / change / remove-lock forms depending on state, and reloads the
+  page after each save so `CompanionAuthMiddleware` enforces the new
+  state on the very next request.
+- **Companion key** is a separate `localStorage` slot
+  (`cpa-companion-key`) from the management key (`cliproxy.mgmtKey`).
+  The lock-setter endpoint uses `managementHeaders()` not
+  `companionHeaders()` — the most consequential invariant of the
+  whole PRD: a phished companion key cannot remove its own gate.
+- **Lowest column** in the Claude accounts table: per-row checkbox
+  bound to `POST /v0/management/companion/claude-pin-states/<id>`
+  with the companion key. 401 evicts the key and reloads back into
+  `locked-no-key`.
+
+**Source-shape tests** in `usage_mode_companion_panel_test.go` (per memory
+\"UI verification without node\" — no JS runtime, real gin engine serves
+the embedded HTML and source-shape assertions read the body):
+
+| Behavior | Test |
+|---|---|
+| LockState card structure (lockCard, lockBadge, lockBody) | `TestServeUsageModePanel_HasCompanionLockCard` |
+| Companion key card structure (companionKeyCard, companionToken, unlock) | `TestServeUsageModePanel_HasCompanionKeyCard` |
+| Dual localStorage keys (`cpa-companion-key` vs `cliproxy.mgmtKey`) | `TestServeUsageModePanel_DualKeyLocalStorage` |
+| Companion endpoints referenced from JS | `TestServeUsageModePanel_ReferencesCompanionEndpoints` |
+| Lock-setter uses `managementHeaders()`, NOT `companionHeaders()` | `TestServeUsageModePanel_LockSetterUsesManagementKey` |
+| Lowest column header + data-pin attr | `TestServeUsageModePanel_HasLowestPriorityColumn` |
+| 401 → evict companion key + reload | `TestServeUsageModePanel_401FallsBackToReload` |
+
+**Three mutations verified red**:
+
+1. Collapse `cpa-companion-key` back into the management-key slot —
+   `TestServeUsageModePanel_DualKeyLocalStorage` catches it.
+2. POST pin-states URL to a non-Companion path —
+   `TestServeUsageModePanel_ReferencesCompanionEndpoints` catches it.
+3. Swap `managementHeaders` → `companionHeaders` on the lock-setter
+   — `TestServeUsageModePanel_LockSetterUsesManagementKey` catches it.
+   This is the most consequential mutation: it would let a phished
+   companion key remove its own gate, defeating the whole PRD.
+
+**Out of scope (still owed)**: operator browser round-trip on lab to
+verify the full UI lifecycle end-to-end. Code path is verified via
+source-shape assertions; only lab deployment proves the page JS runs
+clean in a real browser.
+
+**All 3 tasks of this PRD complete.** Awaiting operator browser
+verification on a `v2026.10.x` lab build before req:learn.
