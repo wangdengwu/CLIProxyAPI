@@ -810,3 +810,42 @@ clean in a real browser.
 
 **All 3 tasks of this PRD complete.** Awaiting operator browser
 verification on a `v2026.10.x` lab build before req:learn.
+
+
+## 2026-10-16 · verify-evidence · v2026.10.16 shipped, lab verify OWED
+
+**Released.** Branch `feat/companion-key-and-claude-pinned-lowest` fast-forwarded
+to `main` (d953aea1) and pushed. Annotated tag `v2026.10.16` created and pushed;
+CI image build should run automatically per `~/.claude/CLAUDE.md` deploy-topology
+memory. 9 commits on the branch (incl. AGENTS.md GitNexus counter refresh):
+
+```
+d953aea1 chore: refresh GitNexus metadata counter (8917 → 9163 symbols)
+77a78f1e docs(knowledge): distill companion-key + pinned-lowest PRD into the persistent layer
+ec491ba8 docs(req): ledger + journal for Task 3 — all 3 tasks complete
+a82b9818 feat(panel): usage-mode.html companion lock + Lowest priority column
+283b4a45 docs(req): ledger + journal for Task 2
+e09681f9 feat(management): claude pin-to-lowest backend
+51f53b77 docs(req): ledger + journal for Task 1
+6d82b306 feat(management): companion page gate + companion-secret setter endpoint
+45effdea docs(req): PRD + 3 task briefs for companion key and claude pinned-lowest
+```
+
+**Risks called out before push**:
+
+1. Lab browser round-trip OWED (Task 3 verify per PRD brief).
+2. PRD 2026-09-30 inert-release trap avoidance: empty `companion-secret` is the
+   documented 「first-run opens」 state, observable via startup warn log + page
+   banner. Lab load must confirm warn log is actually printed.
+3. Companion endpoints require Task 1 middleware to be on the same release;
+   rollback order must be 2 → 1, not reversed.
+4. AGENTS.md metadata refresh is from GitNexus auto-update, runtime-irrelevant
+   but bundled with the merge.
+5. Pre-existing `TestCodexFreeModelsExcludeGPT55` in `internal/registry` fails
+   on bare main — verified via git stash, unrelated to this PRD.
+
+**Rollback预案**：上一 tag `v2026.9.30.1` 仍在仓库。lab 出问题时把 deployment 的 image
+tag 指回 `v2026.9.30.1` 即可，无需重建镜像。
+
+**OWED.** 运营者在 lab v2026.10.16 上浏览器往返（详见 PRD Task 3 verify）。
+通过后追加一条 `verify-evidence` 记录收口。
