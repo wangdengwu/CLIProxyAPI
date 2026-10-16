@@ -691,3 +691,67 @@ relies on.
 
 **Pre-existing, untouched:** `TestCodexFreeModelsExcludeGPT55` in `internal/registry`
 fails on the bare branch (verified via git stash) — unrelated to this PRD.
+
+
+## 2026-10-16 · task-complete · Task 2 (claude pinned-lowest backend)
+
+**Built.** `claude_pin_to_lowest` (bool) — new operator-set-key for Claude accounts.
+`isPinnedLowest` + `authPriority` in `sdk/cliproxy/auth/selector.go`: when set on a
+Claude account, returns `math.MinInt` (absolute floor, regardless of any numeric
+priority). Non-Claude providers ignore the flag entirely. Two new companion-only
+endpoints in `internal/api/handlers/management/companion_pin_states.go`:
+
+- `GET /v0/management/companion/claude-pin-states` — list Claude accounts + pin state
+- `POST /v0/management/companion/claude-pin-states/:id` body `{pinned_to_lowest: bool}`
+  — write both Metadata+Attributes; ClearRatelimitBlock on the → pinned transition
+  (mirrors `claude_usage_mode → dedicated`)
+
+Mounted under a separate `engine.Group(\"/v0/management/companion\")` with ONLY
+`CompanionAuthMiddleware` — management key alone cannot reach them. The standard
+`/v0/management/*` plane is unchanged: GET listing does not emit
+`claude_pin_to_lowest`; PATCH whitelist does not accept it.
+
+**Behavior contracts verified by 16 red-green cycles + 3 mutations**:
+
+| Behavior | Test | Mutation caught |
+|---|---|---|
+| `claude_pin_to_lowest=true` → MinInt (Claude) | `TestAuthPriority_PinToLowest_AlwaysBeatsNumericForClaude` | skip isPinnedLowest |
+| non-Claude + pin → no effect | `...` (table row) | skip isPinnedLowest |
+| Metadata-only fallback (UploadAuthFile) | `TestAuthPriority_PinFromMetadata_ForNonSynthesizedAuth` | skip isPinnedLowest |
+| Multiple pinned → all MinInt | `TestAuthPriority_MultiplePinnedAllReturnMinInt` | skip isPinnedLowest |
+| Non-Claude always isPinnedLowest=false | `TestIsPinnedLowest_NonClaudeAlwaysFalse` | skip isPinnedLowest |
+| Pinned sits below non-pinned in scheduler | `TestSchedulerPick_PinnedLowestClaudeAccountsRoundRobinBelowNonPinned` | skip isPinnedLowest |
+| Pin beats higher numeric priority | `TestSchedulerPick_PinnedLowestBeatsHigherNumericPriority` | skip isPinnedLowest |
+| LIST does not surface `claude_pin_to_lowest` | `TestListAuthFiles_PinToLowestNeverExposed` | leak field in entry |
+| PATCH rejects `claude_pin_to_lowest` | `TestPatchAuthFileFields_RejectsPinToLowestField` | (existing unknown-field gate) |
+| GET companion pin-states (no key + no secret) → 200 | `TestCompanionPinStates_List_OnlyClaudeAccounts` | n/a |
+| GET non-Claude accounts filtered out | `..._List_OnlyClaudeAccounts` | n/a |
+| GET requires companion key when secret set | `..._List_RequiresCompanionKeyWhenSecretSet` | n/a |
+| POST true → both maps + clear block | `..._PostTrue_WritesBothMapsAndClearsBlock` | clear before persist |
+| POST false → both maps lose key | `..._PostFalse_DeletesBothMaps` | n/a |
+| POST non-Claude → 400 | `..._PostNonClaude_Returns400` | n/a |
+| POST missing id → 404 | `..._PostMissing_Returns404` | n/a |
+
+**Two non-obvious gotchas** worth carrying forward:
+
+1. **`ClearRatelimitBlock` order matters with `Manager.Update`.** Update
+   clones the auth snapshot the endpoint already mutated, so a
+   ClearRatelimitBlock called BEFORE Update is silently undone — Update
+   re-installs the previous block from the snapshot. The fix is persist
+   first, then clear (mirrors `PatchAuthFileFields` for
+   `claude_usage_mode → dedicated`). Mutation: swap order →
+   `..._PostTrue_WritesBothMapsAndClearsBlock` flips red.
+
+2. **`isPinnedLowest` provider-gate is essential.** The brief is explicit:
+   pin is Claude-specific. Without the provider gate, a Gemini operator
+   setting the flag would silently reorder priority in a path that has no
+   concept for it. `TestIsPinnedLowest_NonClaudeAlwaysFalse` covers five
+   non-Claude providers explicitly.
+
+**Owed.** Lab v2026.10.x deployment + curl companion endpoints + observe
+selector ordering. End-to-end behavior the page JS relies on (Task 3).
+
+**Coupling for rollback** (per PRD): rollback order is Task 3 → Task 2 →
+Task 1. Standalone revert of Task 2 keeps Task 1s CompanionAuthMiddleware
+unused but harmless; standalone keep of Task 2 without Task 1 leaves companion
+endpoints ungated.
