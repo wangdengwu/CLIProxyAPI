@@ -137,3 +137,60 @@ scheduler 不直接消费 reason，而是映射成实体状态（Ready/Cooldown/
 `AbortWithStatus` 系列自己调了 `WriteHeaderNow()`，所以 404/401 这类断言是准的 —— 这让问题更隐蔽：同一个测试文件里大部分断言可信，唯独条件请求那条骗人。
 
 解法不是补一句 `ctx.Writer.WriteHeaderNow()`，而是**断言一律过真实 engine**：`gin.New()` + 注册该路由 + `engine.ServeHTTP(rec, req)`。顺带消掉整类脚手架产物。本仓既有的 `internal/api/usage_mode_panel_test.go` 就是那个易错写法（它只断言 200/404 所以没踩到），新写 handler 测试别照抄它的形状。
+
+
+## manager-update-clones-snapshot-so-ratelimit-clear-must-follow-persist
+
+`Manager.Update(ctx, auth)` 替换 `m.auths[id]` 时做的是**传入 auth 的 Clone**，不是 in-place 合并：Clone 携带的是调用方当时在传入 auth 上看到的状态。`authManager.GetByID` 本身也返回 Clone，所以 handler 拿到的 `auth` 已经是被冻的副本。
+
+这意味着：**在 Update 之前调用 `ClearRatelimitBlock` 是徒劳的**。
+
+```
+auth = authManager.GetByID(id)               // Clone of m.auths[id], 携带当时 RatelimitBlockUntil
+auth.Metadata["claude_pin_to_lowest"] = true // 改这个 Clone
+ClearRatelimitBlock(auth.ID)                  // m.auths[id].RatelimitBlockUntil = zero
+authManager.Update(ctx, auth)                // m.auths[id] = auth.Clone()，把 original block 装回来了
+```
+
+顺序必须是 Update 在前、Clear 在后：
+
+```
+authManager.Update(ctx, auth)                // m.auths[id] = auth.Clone()
+ClearRatelimitBlock(auth.ID)                  // 在已落定的 m.auths[id] 上清，干净
+```
+
+这是 `PatchAuthFileFields` 走 `claude_usage_mode → dedicated` 与伴随页 `claude_pin_to_lowest → true` 两条路径都踩过的同一坑。**任何要 in-memory 改限流块的 endpoint 必须 Update 在前、Clear 在后**，否则 Clear 被静默吞掉，账号回到 503 状态等 5h 窗口自然重置。
+
+Mutation 验证：把两条调用换序 → "RatelimitBlockUntil after toggle 仍等于种子 future time" 断言变红。
+
+## page-js-must-reload-after-authorization-state-change
+
+页 JS 改了授权态（companion-secret 首次设 / 覆盖 / 清除、companion-key 输入解锁、401 后清除 stale companion key），middleware 是下一个请求才重新评估 —— JS 上下文里的状态变更对同一次 fetch 不生效。
+
+唯一安全的收尾是 `location.reload()`：
+
+- 设锁 / 改锁 / 移锁 → 状态变了，middleware 需重读 cfg → reload
+- 401 拿到 → localStorage 里的 companion key 已失效 → 清掉 → reload
+- companion key 输入解锁 → 写入 localStorage → reload（middleware 决定能否进页）
+
+「绕过去」——比如只清 localStorage 不 reload —— 会出现 JS 以为解锁了但 middleware 仍 401 的分裂状态。运营者看到空白页 / 后续 fetch 全 401 但不知道原因。
+
+配套：401 路径上 evict localStorage + reload 是「fail-secure」的标准动作，避免在 stale key 下继续操作 companion 端点。
+
+## embedded-html-without-node-tests-go-through-real-gin-engine
+
+`go:embed` 的静态资产（伴随页、仪表盘等）在没有 JS 运行时的环境里测不了 JS 单元测试。替代方案是 HTTP body-shape 断言：
+
+1. 真实 `gin.New()` 起一台 mini 服务器，注册该 asset 路由
+2. 真实 `httptest.NewRequest` + `engine.ServeHTTP`
+3. 对 body 字符串做内容断言（关键 DOM id、localStorage 键、端点 URL 字符串、关键变量名）
+
+每个新 shape 必须有独立测试 + 变异检查。值得做的变异：
+- 改 localStorage key 命名（companion-management vs companion-companion）— 断言应能区分二者
+- 改端点 URL prefix（companion vs 不带）— 断言应能区分
+- swap `managementHeaders()` 与 `companionHeaders()` 在某条 fetch 调用上 — 断言应能区分（这是关键安全边界）
+- 删某个 `<th>` 列头或某个 input 字段 — 断言应能区分
+
+裸驱动 + body 断言的关键限制：只能验证**形态**（端点被引用、变量名匹配、id 存在），不能验证**行为**（toggle click 后真的发了 POST）。后者要靠端到端 e2e 测（运营者浏览器往返，本仓 node 不可用环境下由人工 verify 承担）。
+
+配套写 disk 上的 `go:html` 文件改了之后别用 Go AST / 反射取源代码做断言 —— 直接走 gin engine 让浏览器相同问题最直接的方式变成断言。

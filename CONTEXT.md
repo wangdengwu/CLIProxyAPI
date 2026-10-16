@@ -30,3 +30,15 @@ auth 文件的顶层运营者键 `available_window`，声明该账号愿意参�
 
 **provider 无关、usage-mode 无关**：任何账号配了窗口就生效，不检查它是不是 Claude、是不是 shared。窗口外该账号对调度器完全不可见（硬门禁），但仍正常刷新 token。属 Operator-set-keys 家族，因此跨重新登录自动保留。运营者在 `/usage-mode.html` 编辑，该页同时显示服务端算好的 open/closed 徽章与下次开门时刻。
 
+**Claude-pin-to-lowest**:
+auth 文件顶层运营者键 `claude_pin_to_lowest: bool`，仅对 `type == "claude"` 账号生效。设置后该账号在 selector 中被强制放进 `math.MinInt` 优先级桶，**绝对最后被选**——不论它自身 `priority` 是几、也不论其它账号的 priority 怎么变。多个 Claude 账号同时被钉死时同桶轮询。
+
+属 Operator-set-keys 家族，跨登录自动保留。**专门由伴随页独占读写**：`/v0/management/companion/claude-pin-states` 端点（GET 列表 / POST `/:id` toggle）只接受 companion key；标准 `/v0/management/auth-files` 列表**不**返回该字段，PATCH 字段白名单**不**接受该字段（外显管理面板 manage.html 完全看不到）。Companion key + standard management key 都拿不到这条键的写权。toggle true 时同步调用 `ClearRatelimitBlock`（与 `claude_usage_mode → dedicated` 同链），让被打入最低桶的账号立即恢复接流量，而不是等限流窗口自然重置。
+
+**Companion-secret**:
+远程管理配置键 `remote-management.companion-secret`，字符串（裸或 bcrypt，与 `secret-key` 同处理：`LoadConfig` 在非 bcrypt 时自动 hash 后写回）。
+
+门新设计的伴随页闸门中间件 `CompanionAuthMiddleware`，作用路由：`GET /usage-mode.html`、`/v0/management/companion/*`。空 secret（默认）= 放行（首装默认打开）；非空 = 拒绝并返 `WWW-Authenticate: Basic realm="Companion panel"`，让浏览器弹原生对话框。Companion key 与 management key 互不接受，互不代替：companion 钥匙进不了 `/v0/management/*` 任何路由（包括 OAuth、logs、config），management 钥匙进不了伴随页与 companion 端点。设置入口 `POST /v0/management/companion-secret`（management key）支持首次设 / 覆盖 / 清除，首次不需 current_secret，已设状态下覆盖 / 清除需 current_secret。
+
+**默认设计为「首装页面打开」**（与 `disable-control-panel` 的「默认关」相反）：运营者初次部署能在伴随页上设锁，而不是预先在 yaml 里写明文。启动期会在 companion-secret 空时打 warn 日志提醒未上锁状态。
+
