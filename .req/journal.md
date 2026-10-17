@@ -924,3 +924,52 @@ kubectl --context dengwu.wang-local-lab -n gemini rollout restart deploy/cliprox
 - v2026.10.16 镜像未变（仍是发布版本，未发 v2026.10.16.1）
 
 **OWED (浏览器验收)**：你重新验证一次完整流程（这次请记住 companion key 是什么）。
+
+## 2026-10-17 · task-complete · usage-mode pin checkbox single render (tasks/2026-10-17-usage-mode-pin-checkbox-fix #1)
+
+**Built.** `usage-mode.html` 的 Lowest 列复选框终于能显示。`loadAccounts` 用
+`Promise.all([fetchAuthFiles(), fetchPinStates()])` 并行取数，两个都返回后 `render(files, pins)`
+只渲染一次，复选框由 `pinCell(id, pinByID)` 在 `render` 里直接生成。点击走 `host` 上的委托
+`change` 监听。删除了整套 wrapper（`applyPinStates` / `fetchPinStatesAndApply` /
+`origLoadAccounts*` / `loadAccounts = function` / remove+addEventListener 重绑）。pin 请求失败
+→ `fetchPinStates` 返回 `null` → Lowest 列显示 `—` + 提示「pin state failed to load」，
+**不会**退化成全部未勾选；单个账号在 map 里缺失同样显示 `—`。`.wrap` 由 980px 放宽到 1280px
+（左右 20px padding 不变）。后端未改。
+
+**Root cause（上一轮为什么没修好）.** 86556fc8 只修了「点击监听器调用的是哪个函数」，没碰时序：
+`origLoadAccounts()` 是异步的（先 fetch auth-files 再 render），wrapper 紧接着就发 pin-states。
+pin 响应通常先到，此时表还没渲染，`applyPinStates` 找不到任何 `tr[data-id]`；随后 `render()`
+把每个 Lowest 格写成 `—`，再没人替换。
+
+**The miss.** 86556fc8 的回归测试 `TestServeUsageModePanel_PinColumnWrapperBoundToClickHandler`
+只 grep 页面源码里的 `removeEventListener` / 捕获顺序，两个版本都能通过，而时序 bug 照样发布。
+教训：**形状断言证明不了异步时序**；这个页面的行为只能由行为级检查证明。本任务因此：
+(1) 把结构改成「时序不可能写错」（两个响应都等到、只渲染一次），(2) 把浏览器验收设为任务 2 的硬门槛。
+旧的 wrapper 测试已被替换（其测试对象已删除）。
+
+**Tests.** 6 条新的页面形状断言（`NoLoaderWrapperMachinery` / `LoadsListAndPinStatesTogether` /
+`RenderEmitsPinCheckboxInline` / `PinToggleIsDelegated` / `PinStateFailureIsNotUnchecked` /
+`WiderLayout`），7 个变异逐一验证会变红：重新引入 wrapper、Promise.all 去掉 pin-states、
+render 写回静态 `—`、去掉 delegated data-pin 分支、`fetchPinStates` 失败改回 `return {}`、
+`pinCell` 去掉 `typeof … !== "boolean"`、宽度改回 980px。每个变异只让对应测试变红。
+
+**Extra evidence (not in the Go suite).** 无 node，但 macOS 自带 JavaScriptCore：用
+`osascript -l JavaScript` 做了 (a) `new Function(script)` 纯语法解析 → OK；(b) 桩 DOM + 同步迷你
+Promise，让 pin-states 先于 auth-files 返回（复现原竞态）。**修复前（HEAD）**：0 个复选框、
+2 个 `—`；**修复后**：a1 已勾选、a2 未勾选、共 2 个复选框；pin 请求 500 时 2 个 `—` + 提示消息。
+这不是真实浏览器（没有布局、没有真实 fetch/事件），不能替代任务 2。一次性脚本未入库。
+
+**Incidental fix.** `togglePin` 里 `r.status === 401` 分支原先排在 `!r.ok` 之后，401 永远先被
+`!r.ok` 吃掉，「清 companion key 并 reload」是死代码。顺序调换后才可达。
+
+**Noticed, NOT fixed (out of scope).** `renderLockCard` 里 `document.querySelector(".card:nth-of-type(3)")`
+想隐藏「账号表」卡，但 `.wrap` 下第 3 个 div 是 management-key 卡（账号表是第 4 个）——
+locked-no-key 时被隐藏的是 management key 卡而不是表。建议单独开一个 ticket 处理。
+
+**Verify.** `go build ./...`、`go vet ./internal/api/`、`go test ./internal/api/...` 全绿
+（`internal/registry` 里已知的 `TestCodexFreeModelsExcludeGPT55` 失败与本改动无关，未跑到）。
+GitNexus MCP 工具本会话不可用，未跑 impact/detect_changes；改动面是一个 go:embed 静态页 + 它的
+测试文件，无 Go 符号被修改。
+
+**OWED.** 任务 2：确认 lab 实际版本 → 发 v2026.10.16.3 → 浏览器验收（复选框可见、点击切换、
+刷新后保持、宽度够用）。通过前不要把本修复当作「已验证」。
