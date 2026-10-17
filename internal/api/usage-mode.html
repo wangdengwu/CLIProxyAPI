@@ -16,7 +16,7 @@
     margin: 0; background: var(--bg); color: var(--ink);
     font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   }
-  .wrap { max-width: 980px; margin: 0 auto; padding: 32px 20px 64px; }
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 32px 20px 64px; }
   h1 { font-size: 20px; font-weight: 650; margin: 0 0 4px; letter-spacing: .2px; }
   .sub { color: var(--muted); margin: 0 0 24px; font-size: 13px; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin-bottom: 18px; }
@@ -56,6 +56,8 @@
   .empty { color: var(--muted); padding: 20px 10px; text-align: center; }
   .hint { color: var(--muted); font-size: 12px; margin-top: 10px; }
   .spin { opacity: .6; }
+  label.pinlbl { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--ded); font-size: 12px; text-transform: none; letter-spacing: 0; white-space: nowrap; cursor: pointer; }
+  label.pinlbl input { accent-color: var(--ded); margin: 0; }
   .usage { min-width: 120px; }
   .usage .pct { font-weight: 600; font-variant-numeric: tabular-nums; }
   .usage .reset { display: block; color: var(--muted); font-size: 11px; }
@@ -277,7 +279,21 @@
       (st.at ? '<small class="reopen">opens ' + escapeHtml(st.at) + '</small>' : '');
   }
 
-  function render(entries) {
+  // pinCell renders the "always last" checkbox for one Claude row. pinByID maps account id
+  // -> pinned boolean, or is null when the pin-state request failed. A missing or unknown
+  // state renders an em dash, NEVER an unchecked box: unchecked would claim "not pinned"
+  // for an account that may well be pinned, and invite a wrong toggle.
+  function pinCell(id, pinByID) {
+    if (!pinByID || typeof pinByID[id] !== "boolean") {
+      return '<span class="na" title="pin state failed to load">—</span>';
+    }
+    return '<label class="pinlbl" title="always picked last">' +
+      '<input type="checkbox" data-pin="' + encodeURIComponent(id) + '"' +
+        (pinByID[id] === true ? ' checked' : '') + '>' +
+      '<span>always last</span></label>';
+  }
+
+  function render(entries, pinByID) {
     var claude = entries.filter(isClaude);
     if (!claude.length) {
       host.innerHTML = '<div class="empty">No Claude accounts found.</div>';
@@ -311,7 +327,7 @@
         '<td>' + badge + '</td>' +
         '<td>' + sel + '</td>' +
         '<td class="window">' + windowCell(idAttr, e.available_window, e.available_now, e.next_open_at) + '</td>' +
-        '<td class="pin"><span class="na">—</span></td>' +
+        '<td class="pin">' + pinCell(id, pinByID) + '</td>' +
       '</tr>';
     }).join("");
     host.innerHTML =
@@ -375,21 +391,53 @@
     });
   }
 
-  function loadAccounts() {
-    if (!token()) { setMsg("Enter your management key first.", "err"); return; }
-    saveToken();
-    setMsg("Loading…");
-    host.classList.add("spin");
-    fetch("/v0/management/auth-files", { headers: headers() })
+  // Resolves the auth-files list; rejects (with a user-facing message) on failure.
+  function fetchAuthFiles() {
+    return fetch("/v0/management/auth-files", { headers: headers() })
       .then(function (r) {
         if (r.status === 401 || r.status === 403) { throw new Error("Unauthorized — check the management key."); }
         if (!r.ok) { throw new Error("Load failed (HTTP " + r.status + ")."); }
         return r.json();
       })
+      .then(function (data) { return (data && data.files) || []; });
+  }
+
+  // Resolves a map of account id -> pinned boolean, or null when the pin states could not
+  // be loaded. Never rejects and never substitutes an empty map: "unknown" must stay
+  // distinguishable from "nothing is pinned".
+  function fetchPinStates() {
+    return fetch("/v0/management/companion/claude-pin-states", { headers: companionHeaders() })
+      .then(function (r) {
+        if (!r.ok) { throw new Error("HTTP " + r.status); }
+        return r.json();
+      })
       .then(function (data) {
-        var files = (data && data.files) || [];
-        render(files);
-        setMsg(files.filter(isClaude).length + " Claude account(s). Click Load on a row to fetch its usage.", "ok");
+        var byID = {};
+        ((data && data.states) || []).forEach(function (p) { byID[p.auth_id] = !!p.pinned_to_lowest; });
+        return byID;
+      })
+      .catch(function () { return null; });
+  }
+
+  // Both requests run in parallel and the table is rendered exactly once, after BOTH have
+  // settled, so each Claude row's checkbox is built in place. There is no "draw the table,
+  // patch the pin column later" step whose ordering could go wrong.
+  function loadAccounts() {
+    if (!token()) { setMsg("Enter your management key first.", "err"); return; }
+    saveToken();
+    setMsg("Loading…");
+    host.classList.add("spin");
+    Promise.all([fetchAuthFiles(), fetchPinStates()])
+      .then(function (res) {
+        var files = res[0];
+        var pins = res[1];
+        render(files, pins);
+        var n = files.filter(isClaude).length;
+        if (pins === null && n > 0) {
+          setMsg(n + " Claude account(s). Pin state failed to load — the Lowest column is unavailable.", "err");
+        } else {
+          setMsg(n + " Claude account(s). Click Load on a row to fetch its usage.", "ok");
+        }
       })
       .catch(function (err) { setMsg(err.message || String(err), "err"); })
       .then(function () { host.classList.remove("spin"); });
@@ -465,21 +513,18 @@
     if (b) { fetchUsage(decodeURIComponent(b.getAttribute("data-load"))); }
   });
 
-  // Delegated too: the window inputs are rebuilt on every render, and change fires on
-  // blur as well as Enter.
+  // Delegated too: the window inputs and pin checkboxes are rebuilt on every render, and
+  // change fires on blur as well as Enter.
   host.addEventListener("change", function (e) {
     var t = e.target;
-    if (t && t.getAttribute && t.getAttribute("data-window") != null) { onWindowChange(t); }
+    if (!t || !t.getAttribute) { return; }
+    if (t.getAttribute("data-window") != null) { onWindowChange(t); }
+    else if (t.getAttribute("data-pin") != null) { togglePin(t); }
   });
 
   loadBtn.addEventListener("click", loadAccounts);
   refreshBtn.addEventListener("click", loadAccounts);
   tokenEl.addEventListener("keydown", function (e) { if (e.key === "Enter") { loadAccounts(); } });
-  // Save the listener-bound reference so the pin-column wrapper below can
-  // call the original AND chain in fetchPinStatesAndApply. Reassigning
-  // loadAccounts AFTER these listeners won't change what they call —
-  // they captured the function reference at addEventListener time.
-  var origLoadAccountsForListener = loadAccounts;
 
   // ---- Companion lock + lowest-priority column ----
   // Companion key is a SEPARATE localStorage entry from the management key —
@@ -636,27 +681,9 @@
     try { companionTokenEl.value = localStorage.getItem(COMPANION_TOKEN_KEY) || ""; } catch (e) {}
   }
 
-  // ---- Pin-to-lowest: merge into the existing rows after management load ----
-  function applyPinStates(pinStates) {
-    var byID = {};
-    (pinStates || []).forEach(function (p) { byID[p.auth_id] = p.pinned_to_lowest; });
-    Array.prototype.forEach.call(host.querySelectorAll("tr[data-id]"), function (tr) {
-      var id = decodeURIComponent(tr.getAttribute("data-id"));
-      var cell = tr.querySelector("td.pin");
-      if (!cell) { return; }
-      var pinned = !!byID[id];
-      cell.innerHTML =
-        '<label class="row" style="gap:6px;">' +
-          '<input type="checkbox" data-pin="' + encodeURIComponent(id) + '"' +
-            (pinned ? ' checked' : '') + '>' +
-          '<span class="hint" style="font-size:11px">always last</span>' +
-        '</label>';
-    });
-    Array.prototype.forEach.call(host.querySelectorAll("input[data-pin]"), function (cb) {
-      cb.addEventListener("change", function () { togglePin(cb); });
-    });
-  }
-
+  // ---- Pin-to-lowest toggle (the checkbox itself is built by pinCell/render) ----
+  // Wired through the delegated change listener on host. The checkbox already shows the
+  // wanted state when this runs; on failure it is put back and the error is shown.
   function togglePin(cb) {
     var id = decodeURIComponent(cb.getAttribute("data-pin"));
     var want = cb.checked;
@@ -667,18 +694,19 @@
       body: JSON.stringify({ pinned_to_lowest: want })
     })
       .then(function (r) {
-        if (!r.ok) {
-          return r.json().catch(function () { return {}; }).then(function (b) {
-            throw new Error(b.error || ("HTTP " + r.status));
-          });
-        }
-        // 401 means the companion key is gone — fall back to locked-no-key
+        // 401 means the companion key is gone — fall back to locked-no-key. Checked before
+        // the generic !ok branch, which would otherwise swallow it.
         if (r.status === 401) {
           localStorage.removeItem(COMPANION_TOKEN_KEY);
           location.reload();
           return;
         }
-        return r.json().catch(function () { return {}; });
+        if (!r.ok) {
+          return r.json().catch(function () { return {}; }).then(function (b) {
+            throw new Error(b.error || ("HTTP " + r.status));
+          });
+        }
+        setMsg(id + (want ? " pinned to lowest priority." : " unpinned."), "ok");
       })
       .catch(function (err) {
         cb.checked = !want;
@@ -686,30 +714,6 @@
       })
       .then(function () { cb.disabled = false; });
   }
-
-  function fetchPinStatesAndApply() {
-    fetch("/v0/management/companion/claude-pin-states", { headers: companionHeaders() })
-      .then(function (r) {
-        if (!r.ok) { return { states: [] }; }
-        return r.json();
-      })
-      .then(function (data) { applyPinStates((data && data.states) || []); })
-      .catch(function () { applyPinStates([]); });
-  }
-
-  // Existing loadAccounts ends by rendering the table; patch in the pin
-  // column on its tail. We re-bind the buttons so the wrapper is what
-  // the click handlers call (the original addEventListener captured the
-  // un-wrapped reference — see the comment where it's saved above).
-  var origLoadAccounts = origLoadAccountsForListener;
-  loadAccounts = function () {
-    origLoadAccounts();
-    fetchPinStatesAndApply();
-  };
-  loadBtn.removeEventListener("click", origLoadAccounts);
-  refreshBtn.removeEventListener("click", origLoadAccounts);
-  loadBtn.addEventListener("click", loadAccounts);
-  refreshBtn.addEventListener("click", loadAccounts);
 
   // Boot: probe lock state, then run the management-aware flow.
   probeLockState();

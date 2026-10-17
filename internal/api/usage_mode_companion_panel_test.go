@@ -173,38 +173,160 @@ func TestServeUsageModePanel_401FallsBackToReload(t *testing.T) {
 	}
 }
 
-// The "Lowest" column toggles get filled in by applyPinStates, which is only
-// reachable from the wrapper that loads the management table. If that wrapper
-// is dropped (because the addEventListener captures the un-wrapped reference
-// and a later `loadAccounts = …` reassignment does nothing), the column
-// stays on the em-dash placeholder and the feature is silently absent.
+// panelRegion returns the slice of body from the first occurrence of start up
+// to (not including) the first occurrence of end after it. Page functions are
+// declared two-space-indented, so "\n  }\n" is the end of a top-level function.
+func panelRegion(t *testing.T, body, start, end string) string {
+	t.Helper()
+	i := strings.Index(body, start)
+	if i < 0 {
+		t.Fatalf("body missing %q", start)
+	}
+	rest := body[i+len(start):]
+	j := strings.Index(rest, end)
+	if j < 0 {
+		t.Fatalf("no %q found after %q", end, start)
+	}
+	return body[i : i+len(start)+j]
+}
+
+// ---- "Lowest" column: single render --------------------------------------
 //
-// Discriminating assertion: the page must contain BOTH the click-listener
-// registration AND the wrapper re-binding, in that order.
-func TestServeUsageModePanel_PinColumnWrapperBoundToClickHandler(t *testing.T) {
+// History: the checkbox never appeared because the pin states were requested
+// right after the account-list request was STARTED rather than after the table
+// was RENDERED. The pin response landed on an empty table, then render() wrote
+// the em-dash placeholder over everything. The previous regression test only
+// grepped for listener wiring, so it could not see the ordering. These tests
+// pin the structure that makes the ordering impossible to get wrong (both
+// responses awaited, one render) — but source-shape tests still cannot prove
+// runtime ordering; that is the lab browser check in the task's second step.
+
+// The loader-wrapper machinery is the bug's habitat; it must stay deleted.
+func TestServeUsageModePanel_NoLoaderWrapperMachinery(t *testing.T) {
+	s := &Server{cfg: &proxyconfig.Config{}}
+	body := fetchPanelBody(t, s)
+	for _, gone := range []string{
+		`loadAccounts = function`,
+		`origLoadAccounts`,
+		`applyPinStates`,
+		`fetchPinStatesAndApply`,
+		`removeEventListener("click"`,
+	} {
+		if strings.Contains(body, gone) {
+			t.Fatalf("body still contains %q — the wrap-and-patch loader must be gone", gone)
+		}
+	}
+}
+
+// Both responses are awaited together and handed to ONE render call.
+func TestServeUsageModePanel_LoadsListAndPinStatesTogether(t *testing.T) {
 	s := &Server{cfg: &proxyconfig.Config{}}
 	body := fetchPanelBody(t, s)
 
-	// The wrapper is the second definition that captures the original via
-	// origLoadAccountsForListener and re-binds loadAccounts. The wrapper
-	// pattern only works when removeEventListener comes before the second
-	// addEventListener — without that, the original click listener never
-	// fires the wrapper, and fetchPinStatesAndApply never runs.
-	if !strings.Contains(body, `removeEventListener("click", origLoadAccounts)`) {
-		t.Fatalf("body missing removeEventListener on the click handler — the wrapper cannot be in effect without it")
+	loader := panelRegion(t, body, "function loadAccounts() {", "\n  }\n")
+	if !strings.Contains(loader, "Promise.all([fetchAuthFiles(), fetchPinStates()])") {
+		t.Fatalf("loadAccounts must await auth-files and pin-states together via Promise.all; got:\n%s", loader)
 	}
-	if !strings.Contains(body, `loadAccounts = function () {`) {
-		t.Fatalf("body missing loadAccounts wrapper")
+	if !strings.Contains(loader, "render(files, pins)") {
+		t.Fatalf("loadAccounts must render once with both results (render(files, pins)); got:\n%s", loader)
 	}
-	if !strings.Contains(body, `fetchPinStatesAndApply()`) {
-		t.Fatalf("body missing fetchPinStatesAndApply call inside the wrapper")
+
+	list := panelRegion(t, body, "function fetchAuthFiles() {", "\n  }\n")
+	if !strings.Contains(list, `"/v0/management/auth-files"`) || !strings.Contains(list, "headers()") {
+		t.Fatalf("fetchAuthFiles must GET /v0/management/auth-files with the management headers; got:\n%s", list)
 	}
-	// Order matters: origLoadAccounts capture must come AFTER the
-	// addEventListener lines, not before.
-	idxOrigCapture := strings.Index(body, "origLoadAccountsForListener")
-	idxListener := strings.Index(body, `addEventListener("click", loadAccounts)`)
-	if idxOrigCapture < 0 || idxListener < 0 || idxOrigCapture <= idxListener {
-		t.Fatalf("origLoadAccountsForListener must be captured after the click listener registration (idxOrig=%d listenerIdx=%d)",
-			idxOrigCapture, idxListener)
+	pins := panelRegion(t, body, "function fetchPinStates() {", "\n  }\n")
+	if !strings.Contains(pins, `"/v0/management/companion/claude-pin-states"`) || !strings.Contains(pins, "companionHeaders()") {
+		t.Fatalf("fetchPinStates must GET the companion pin-states endpoint with the companion headers; got:\n%s", pins)
+	}
+}
+
+// The checkbox is produced by render itself, driven by the pin map — not
+// patched in after the fact over a static placeholder.
+func TestServeUsageModePanel_RenderEmitsPinCheckboxInline(t *testing.T) {
+	s := &Server{cfg: &proxyconfig.Config{}}
+	body := fetchPanelBody(t, s)
+
+	render := panelRegion(t, body, "function render(entries, pinByID) {", "\n  }\n")
+	if !strings.Contains(render, `'<td class="pin">' + pinCell(id, pinByID) + '</td>'`) {
+		t.Fatalf("render must build the Lowest cell with pinCell(id, pinByID); got:\n%s", render)
+	}
+	if strings.Contains(render, `<td class="pin"><span class="na">—</span></td>`) {
+		t.Fatalf("render still writes a static em-dash Lowest cell")
+	}
+
+	cell := panelRegion(t, body, "function pinCell(id, pinByID) {", "\n  }\n")
+	for _, want := range []string{
+		`type="checkbox"`,
+		`data-pin="`,
+		`pinByID[id] === true`,
+		`always last`,
+		`always picked last`,
+	} {
+		if !strings.Contains(cell, want) {
+			t.Fatalf("pinCell missing %q; got:\n%s", want, cell)
+		}
+	}
+}
+
+// Checkbox clicks are handled by one delegated listener on the table host, so
+// re-renders never need to re-bind anything.
+func TestServeUsageModePanel_PinToggleIsDelegated(t *testing.T) {
+	s := &Server{cfg: &proxyconfig.Config{}}
+	body := fetchPanelBody(t, s)
+
+	listener := panelRegion(t, body, `host.addEventListener("change", function (e) {`, "\n  });\n")
+	if !strings.Contains(listener, `data-pin`) || !strings.Contains(listener, `togglePin(`) {
+		t.Fatalf("host change listener must route data-pin checkboxes to togglePin; got:\n%s", listener)
+	}
+	if strings.Contains(body, `input[data-pin]`) {
+		t.Fatalf("per-render querySelectorAll binding of pin checkboxes must be gone")
+	}
+}
+
+// A failed or missing pin state must read as "unknown", never as "unpinned":
+// painting an unchecked box on a pinned account invites a wrong toggle.
+func TestServeUsageModePanel_PinStateFailureIsNotUnchecked(t *testing.T) {
+	s := &Server{cfg: &proxyconfig.Config{}}
+	body := fetchPanelBody(t, s)
+
+	pins := panelRegion(t, body, "function fetchPinStates() {", "\n  }\n")
+	if !strings.Contains(pins, "return null") {
+		t.Fatalf("fetchPinStates must resolve null on failure; got:\n%s", pins)
+	}
+	if strings.Contains(pins, "return {}") {
+		t.Fatalf("fetchPinStates must not fall back to an empty (all-unchecked) map; got:\n%s", pins)
+	}
+
+	cell := panelRegion(t, body, "function pinCell(id, pinByID) {", "\n  }\n")
+	if !strings.Contains(cell, `typeof pinByID[id] !== "boolean"`) {
+		t.Fatalf("pinCell must treat a missing/unknown state as unavailable; got:\n%s", cell)
+	}
+	iDash := strings.Index(cell, "—")
+	iBox := strings.Index(cell, `type="checkbox"`)
+	if iDash < 0 || iBox < 0 || iDash > iBox {
+		t.Fatalf("pinCell must return the em-dash fallback BEFORE it can build a checkbox (dash=%d box=%d)", iDash, iBox)
+	}
+	if !strings.Contains(cell, "pin state failed to load") {
+		t.Fatalf("the fallback cell must explain itself (title \"pin state failed to load\")")
+	}
+
+	loader := panelRegion(t, body, "function loadAccounts() {", "\n  }\n")
+	if !strings.Contains(loader, "pins === null") {
+		t.Fatalf("loadAccounts must surface a visible message when pins === null; got:\n%s", loader)
+	}
+}
+
+// The page was too narrow for the 7-column table (980px max width less 2x20px
+// padding = 940px content area).
+func TestServeUsageModePanel_WiderLayout(t *testing.T) {
+	s := &Server{cfg: &proxyconfig.Config{}}
+	body := fetchPanelBody(t, s)
+
+	if strings.Contains(body, "max-width: 980px") {
+		t.Fatalf("old 980px max width is still present")
+	}
+	if !strings.Contains(body, ".wrap { max-width: 1280px; margin: 0 auto; padding: 32px 20px 64px; }") {
+		t.Fatalf("wider .wrap rule (1280px max width, 20px side padding kept) not found")
 	}
 }
